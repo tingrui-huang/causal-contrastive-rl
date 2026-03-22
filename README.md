@@ -58,6 +58,14 @@ python experiments/smoke_contrastive.py
 python experiments/train_contrastive_baseline.py
 ```
 
+**Batch comparison (HiddenFork clean vs confounded, 5 seeds 0–4 → CSV):**
+
+```bash
+python experiments/run_hidden_fork_seed_sweep.py
+```
+
+Writes `results/hidden_fork_seed_sweep.csv` and prints the same CSV to stdout. Use `--stdout-only` to skip the file; `-o path.csv` to change the path.
+
 - If PyTorch loads: uses **PyTorch**; device is **`cuda`** when available and a tiny CUDA alloc succeeds, else **`cpu`**. Checkpoint: **`checkpoints/contrastive_baseline.pt`**.
 - If `import torch` **raises** (e.g. `torch_cuda.dll` / WinError 127): automatically uses **NumPy** backend (CPU). Checkpoint: **`checkpoints/contrastive_baseline.npz`**.
 

@@ -407,7 +407,7 @@ Use these to compare **clean vs confounded** (larger margin usually means easier
 - Loss is finite; no `NaN` over a short run.
 - Checkpoint or final weights can be saved/loaded (optional but recommended—document).
 
-**Repository defaults:** `agents/contrastive_critic.py` + `experiments/train_contrastive_baseline.py`; defaults from `configs/training_defaults.py` (e.g. 50 train steps); checkpoint at `checkpoints/contrastive_baseline.pt`. If `import torch` fails (e.g. Windows CUDA DLL errors), the training script falls back to **`agents/contrastive_critic_numpy.py`** and saves **`checkpoints/contrastive_baseline.npz`**. See `README.md`.
+**Repository defaults:** `agents/contrastive_critic.py` + `experiments/train_contrastive_baseline.py`; defaults from `configs/training_defaults.py` (e.g. 200 train steps); checkpoint at `checkpoints/contrastive_baseline.pt`. If `import torch` fails (e.g. Windows CUDA DLL errors), the training script falls back to **`agents/contrastive_critic_numpy.py`** and saves **`checkpoints/contrastive_baseline.npz`**. See `README.md`.
 
 ---
 

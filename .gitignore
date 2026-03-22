@@ -208,3 +208,6 @@ __marimo__/
 
 # Training checkpoints (optional local artifacts)
 checkpoints/
+
+# Batch experiment CSV outputs
+results/

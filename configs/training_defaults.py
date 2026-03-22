@@ -17,12 +17,12 @@ TRAIN_SEED = 0
 # --- Environment ---
 # Examples:
 # TRAIN_ENV_ID = "MiniGrid-Empty-5x5-v0"
-# TRAIN_ENV_ID = "CausalContrastive-HiddenFork-15x15-Clean-v0"
+TRAIN_ENV_ID = "CausalContrastive-HiddenFork-15x15-Clean-v0"
 # TRAIN_ENV_ID = "CausalContrastive-HiddenFork-15x15-v0"
-TRAIN_ENV_ID = "MiniGrid-Empty-5x5-v0"
+# TRAIN_ENV_ID = "MiniGrid-Empty-5x5-v0"
 
 TRAIN_MAX_EPISODE_STEPS = 500
-TRAIN_NUM_STEPS = 50
+TRAIN_NUM_STEPS = 200
 TRAIN_HIDDEN = 128
 TRAIN_EMB_DIM = 64
 TRAIN_TAU = 0.07
@@ -52,19 +52,23 @@ def build_train_config(
     batch_size: int | None = None,
     k: int | None = None,
     lr: float | None = None,
+    seed: int | None = None,
+    env_id: str | None = None,
 ) -> dict[str, Any]:
     """Flat dict for logging and checkpointing."""
     from utils.contrastive_sampling import DEFAULT_K
 
     k_val = DEFAULT_K if k is None else k
-    conf = infer_hidden_confounder(TRAIN_ENV_ID)
+    seed_val = TRAIN_SEED if seed is None else seed
+    env_val = TRAIN_ENV_ID if env_id is None else env_id
+    conf = infer_hidden_confounder(env_val)
     if lr is None:
         lr = TRAIN_NUMPY_LR if backend == "numpy" else TRAIN_TORCH_LR
     return {
-        "seed": TRAIN_SEED,
-        "env_id": TRAIN_ENV_ID,
+        "seed": seed_val,
+        "env_id": env_val,
         "has_hidden_confounder": conf,
-        "has_hidden_confounder_note": _confounder_note(conf, TRAIN_ENV_ID),
+        "has_hidden_confounder_note": _confounder_note(conf, env_val),
         "contrastive_k": k_val,
         "max_episode_steps": TRAIN_MAX_EPISODE_STEPS,
         "num_train_steps": TRAIN_NUM_STEPS,
