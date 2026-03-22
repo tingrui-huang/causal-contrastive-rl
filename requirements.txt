@@ -1,5 +1,9 @@
 gymnasium
 minigrid
+# PyTorch: default `pip install torch` may pull a CUDA build. If `import torch` fails
+# with torch_cuda.dll / WinError 127 on Windows, uninstall torch then install CPU wheels:
+#   pip uninstall torch torchvision torchaudio -y
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
 torch
 numpy
 matplotlib

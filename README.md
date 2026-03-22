@@ -36,3 +36,64 @@ python experiments/run_random.py
 ```
 
 (Phase 0 sanity check; see `DEV_SPEC.md` for the full command list per phase.)
+
+## Phase 5 — contrastive tuples (baseline)
+
+- **Code:** `utils/contrastive_sampling.py` (`build_contrastive_batch`), smoke: `experiments/smoke_contrastive.py`.
+- **Fixed** \(k = 2\): positive \(s^+\) is the processed state at index \(t+k\) on the **same** trajectory as anchor \(t\).
+- **Negative** \(s^-\): `state` from a uniformly random transition in the replay buffer.
+- **Anchors:** minibatch indices \(t\) sampled **uniformly with replacement** from valid anchors \(\{0,\ldots,T-1-k\}\) (not full enumeration).
+
+```bash
+python experiments/smoke_contrastive.py
+```
+
+## Phase 6 — contrastive critic baseline (PyTorch or NumPy)
+
+- **Torch:** `agents/contrastive_critic.py` — MLP on `concat(state, one_hot(action))`, L2-normalized embeddings, 2-way softmax contrastive loss.
+- **NumPy fallback:** `agents/contrastive_critic_numpy.py` — same objective; SGD; used when `import torch` fails (common on Windows with broken CUDA DLLs).
+- **Train:** `experiments/train_contrastive_baseline.py` — one episode → buffer → **50** steps with `build_contrastive_batch`, logs `[Train] step =` / `[Train] loss =` each step.
+
+```bash
+python experiments/train_contrastive_baseline.py
+```
+
+- If PyTorch loads: uses **PyTorch**; device is **`cuda`** when available and a tiny CUDA alloc succeeds, else **`cpu`**. Checkpoint: **`checkpoints/contrastive_baseline.pt`**.
+- If `import torch` **raises** (e.g. `torch_cuda.dll` / WinError 127): automatically uses **NumPy** backend (CPU). Checkpoint: **`checkpoints/contrastive_baseline.npz`**.
+
+### PyTorch on Windows (`torch_cuda.dll` / `WinError 127`)
+
+若 **`import torch` 就报错**：这与脚本内「选 CPU/GPU」无关；可先不管 PyTorch，直接跑训练脚本，会走 **NumPy**。
+
+想修好 PyTorch 再用 GPU/CPU 版 torch，可卸载后装 CPU 轮：
+
+```powershell
+pip uninstall torch torchvision torchaudio -y
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+```
+
+需要 GPU 时，请从 [pytorch.org](https://pytorch.org) 选与驱动匹配的 CUDA 构建，并安装 **Visual C++ Redistributable**。
+
+## Phase 7 — hidden regime fork (map-level confounding)
+
+Custom MiniGrid: **`envs/hidden_regime_fork.py`** (`HiddenRegimeForkEnv`). At each `reset`, a binary **`U`** is drawn in **`_gen_grid`** (only if `confound=True`); **`U` is not in `obs`**, only in **`info["confounder"]`** for debugging.
+
+- **Goal:** top-center `(cx, 1)`. **Agent:** bottom-center `(cx, size-2)` facing up.
+- **Fork:** trunk on column `cx` to row `y=3`; **left** detour `(cx−1,3),(cx−1,2)` vs **right** `(cx+1,3),(cx+1,2)`; shared row `(cx,2)` then goal. **Exactly one** side is open: `U=0` → left open, `U=1` → right open (the other branch cells are walls).
+- **Clean baseline:** `confound=False` fixes `U=0` every episode.
+
+Registered ids (import **`envs`** before `gym.make` — `run_pipeline.py` already does):
+
+| Env id | Meaning |
+|--------|--------|
+| `CausalContrastive-HiddenFork-9x9-v0` | `confound=True`, random `U` |
+| `CausalContrastive-HiddenFork-9x9-Clean-v0` | `confound=False`, fixed layout |
+
+**Phase 4 pipeline:**
+
+```bash
+python experiments/run_pipeline.py --env CausalContrastive-HiddenFork-9x9-v0
+python experiments/run_pipeline.py --env CausalContrastive-HiddenFork-9x9-Clean-v0
+```
+
+**Research wording:** interpret as **latent map regime** changing reachable futures (not textbook policy confounding unless you add a behavioral policy). Phase 8+ is for pessimistic / causal fixes.

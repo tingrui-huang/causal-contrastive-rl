@@ -7,9 +7,13 @@ Documented behavior:
 - Each stored item is a **processed** transition: ``state`` / ``next_state`` are
   NumPy vectors from ``utils.preprocess.extract_state`` applied to ``obs`` /
   ``next_obs`` (not raw dict observations).
+
+Phase 7: use ``--env CausalContrastive-HiddenFork-9x9-v0`` (confounded) or
+``CausalContrastive-HiddenFork-9x9-Clean-v0`` (fixed layout). Requires ``import envs``.
 """
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -20,6 +24,8 @@ if str(ROOT) not in sys.path:
 import gymnasium as gym
 import minigrid  # noqa: F401 — register MiniGrid envs
 import numpy as np
+
+import envs  # noqa: F401 — register CausalContrastive-* envs
 
 from buffers.replay_buffer import ReplayBuffer
 from utils.collector import rollout_episode
@@ -45,7 +51,16 @@ def processed_transition(trans: dict) -> dict:
 
 
 def main() -> None:
-    env = gym.make("MiniGrid-Empty-5x5-v0", render_mode="rgb_array")
+    parser = argparse.ArgumentParser(description="Phase 4 integrated pipeline smoke.")
+    parser.add_argument(
+        "--env",
+        type=str,
+        default="MiniGrid-Empty-5x5-v0",
+        help="Gymnasium env id (e.g. MiniGrid-Empty-5x5-v0, CausalContrastive-HiddenFork-9x9-v0).",
+    )
+    args = parser.parse_args()
+
+    env = gym.make(args.env, render_mode="rgb_array")
     policy = build_random_policy(env)
 
     trajectory = rollout_episode(env, policy, max_steps=500, seed=0)

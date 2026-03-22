@@ -338,6 +338,8 @@ python experiments/smoke_contrastive.py
 - **Positive \(s^+\):** future state in the **same** trajectory at offset \(+k\) (fixed \(k\), document default).
 - **Negative \(s^-\):** random state from buffer (or random transition’s `next_obs`—document one rule and stick to it).
 
+**Repository defaults (see `README.md`):** \(k=2\); negative is the **`state`** field of a uniformly sampled buffer transition; anchor indices \(t\) are drawn **uniformly with replacement** from \(\{0,\ldots,T-1-k\}\) (not full enumeration). Implementation: `utils/contrastive_sampling.py`, smoke: `experiments/smoke_contrastive.py`.
+
 **Required logging (exact lines):**
 
 ```text
@@ -389,6 +391,8 @@ Prefixes: `[Train] step = ` and `[Train] loss = ` (spaces as shown).
 - Loss is finite; no `NaN` over a short run.
 - Checkpoint or final weights can be saved/loaded (optional but recommended—document).
 
+**Repository defaults:** `agents/contrastive_critic.py` + `experiments/train_contrastive_baseline.py`; 50 train steps; checkpoint at `checkpoints/contrastive_baseline.pt`. If `import torch` fails (e.g. Windows CUDA DLL errors), the training script falls back to **`agents/contrastive_critic_numpy.py`** and saves **`checkpoints/contrastive_baseline.npz`**. See `README.md`.
+
 ---
 
 ### Phase 7 — Confounding Environment
@@ -414,6 +418,8 @@ python experiments/run_pipeline.py --env <confounded_env_id>
 
 - Same logging contracts as Phase 0–4 still hold (including Phase 4’s five-line contract).
 - A short experiment script documents **expected degradation** of the Phase 6 baseline under confounding (qualitative log or metric—document).
+
+**Repository defaults:** `envs/hidden_regime_fork.py` — `HiddenRegimeForkEnv` with **goal** at top center and **fork** that opens left vs right depending on hidden **`U`** (sampled in `_gen_grid`; **`U ∉ obs`**, `info["confounder"]` for debug). **`CausalContrastive-HiddenFork-9x9-v0`** (confounded) vs **`CausalContrastive-HiddenFork-9x9-Clean-v0`** (fixed `U=0`). See `README.md`.
 
 ---
 
