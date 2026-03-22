@@ -45,6 +45,21 @@ class ContrastiveCritic(nn.Module):
         h = self.encoder(x)
         return F.normalize(h, dim=-1)
 
+    def logits(
+        self,
+        s: torch.Tensor,
+        a: torch.Tensor,
+        s_pos: torch.Tensor,
+        s_neg: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Temperature-scaled dot-product scores (B,) each."""
+        h = self.embed(s, a)
+        h_pos = self.embed(s_pos, a)
+        h_neg = self.embed(s_neg, a)
+        pos_logit = (h * h_pos).sum(dim=-1) / self.tau
+        neg_logit = (h * h_neg).sum(dim=-1) / self.tau
+        return pos_logit, neg_logit
+
     def forward(
         self,
         s: torch.Tensor,
@@ -55,11 +70,7 @@ class ContrastiveCritic(nn.Module):
         """
         Returns scalar loss (mean over batch).
         """
-        h = self.embed(s, a)
-        h_pos = self.embed(s_pos, a)
-        h_neg = self.embed(s_neg, a)
-        pos_logit = (h * h_pos).sum(dim=-1) / self.tau
-        neg_logit = (h * h_neg).sum(dim=-1) / self.tau
-        logits = torch.stack([pos_logit, neg_logit], dim=1)
-        target = torch.zeros(logits.size(0), dtype=torch.long, device=logits.device)
-        return F.cross_entropy(logits, target)
+        pos_logit, neg_logit = self.logits(s, a, s_pos, s_neg)
+        logits2 = torch.stack([pos_logit, neg_logit], dim=1)
+        target = torch.zeros(logits2.size(0), dtype=torch.long, device=logits2.device)
+        return F.cross_entropy(logits2, target)

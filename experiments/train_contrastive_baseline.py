@@ -5,10 +5,13 @@ Uses **PyTorch** when ``import torch`` succeeds; otherwise falls back to a **Num
 implementation (no GPU) so Phase 6 runs even if the PyTorch install is broken
 (e.g. ``torch_cuda.dll`` / WinError 127 on Windows).
 
+**Seeds and env:** set ``TRAIN_SEED`` / ``TRAIN_ENV_ID`` in ``configs/training_defaults.py`` only.
+
 Verification: ``python experiments/train_contrastive_baseline.py``
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -20,6 +23,8 @@ import gymnasium as gym
 import minigrid  # noqa: F401
 import numpy as np
 
+import envs  # noqa: F401 — register HiddenFork ids when TRAIN_ENV_ID uses them
+
 _TORCH_AVAILABLE = False
 try:
     import torch
@@ -30,6 +35,21 @@ except OSError:
 
 from agents.contrastive_critic_numpy import ContrastiveCriticNumpy
 from buffers.replay_buffer import ReplayBuffer
+from configs.training_defaults import (
+    TRAIN_EMB_DIM,
+    TRAIN_ENV_ID,
+    TRAIN_HIDDEN,
+    TRAIN_MAX_EPISODE_STEPS,
+    TRAIN_NUMPY_LR,
+    TRAIN_NUM_STEPS,
+    TRAIN_REPLAY_CAPACITY,
+    TRAIN_SEED,
+    TRAIN_TAU,
+    TRAIN_TORCH_LR,
+    build_train_config,
+    format_train_config_compact,
+    format_train_config_lines,
+)
 from utils.collector import rollout_episode
 from utils.contrastive_sampling import DEFAULT_K, build_contrastive_batch
 from utils.preprocess import extract_state
@@ -55,15 +75,17 @@ def processed_transition(trans: dict) -> dict:
     }
 
 
-def collect_episode(seed: int = 0):
+def collect_episode(seed: int, env_id: str):
     """Roll out one episode, fill replay buffer; return trajectory + dims."""
     rng = np.random.default_rng(seed)
-    env = gym.make("MiniGrid-Empty-5x5-v0", render_mode="rgb_array")
+    env = gym.make(env_id, render_mode="rgb_array")
     n_actions = int(env.action_space.n)
     policy = build_random_policy(env)
-    trajectory = rollout_episode(env, policy, max_steps=500, seed=seed)
+    trajectory = rollout_episode(
+        env, policy, max_steps=TRAIN_MAX_EPISODE_STEPS, seed=seed
+    )
 
-    buffer = ReplayBuffer(capacity=10000)
+    buffer = ReplayBuffer(capacity=TRAIN_REPLAY_CAPACITY)
     for trans in trajectory:
         buffer.add(processed_transition(trans))
 
@@ -71,7 +93,8 @@ def collect_episode(seed: int = 0):
     k = DEFAULT_K
     if T < k + 1:
         raise RuntimeError(
-            f"Need trajectory length >= k+1={k+1}, got T={T}. Increase max_steps or change seed."
+            f"Need trajectory length >= k+1={k+1}, got T={T}. "
+            f"Increase TRAIN_MAX_EPISODE_STEPS in configs/training_defaults.py or change TRAIN_SEED / TRAIN_ENV_ID."
         )
 
     state_dim = int(extract_state(trajectory[0]["obs"]).shape[0])
@@ -88,29 +111,45 @@ def _select_torch_device():
     return torch.device("cuda")
 
 
+def _print_config_header(lines: list[str]) -> None:
+    print()
+    for line in lines:
+        print(line)
+    print()
+
+
 def train_torch() -> None:
-    torch.manual_seed(0)
+    torch.manual_seed(TRAIN_SEED)
     device = _select_torch_device()
     if device.type == "cuda":
-        torch.cuda.manual_seed_all(0)
+        torch.cuda.manual_seed_all(TRAIN_SEED)
     print(f"Using backend: PyTorch  device={device}")
 
-    trajectory, buffer, state_dim, n_actions, T, k, rng = collect_episode(0)
+    trajectory, buffer, state_dim, n_actions, T, k, rng = collect_episode(
+        TRAIN_SEED, TRAIN_ENV_ID
+    )
+
+    batch_size = min(32, T - k)
+    cfg = build_train_config(
+        backend="torch",
+        device=str(device),
+        batch_size=batch_size,
+        k=k,
+        lr=TRAIN_TORCH_LR,
+    )
+    _print_config_header(format_train_config_lines(cfg))
 
     model = ContrastiveCritic(
         state_dim=state_dim,
         n_actions=n_actions,
-        hidden=128,
-        emb_dim=64,
-        tau=0.07,
+        hidden=TRAIN_HIDDEN,
+        emb_dim=TRAIN_EMB_DIM,
+        tau=TRAIN_TAU,
     ).to(device)
-    opt = torch.optim.Adam(model.parameters(), lr=1e-3)
-
-    batch_size = min(32, T - k)
-    num_steps = 50
+    opt = torch.optim.Adam(model.parameters(), lr=TRAIN_TORCH_LR)
 
     model.train()
-    for step in range(1, num_steps + 1):
+    for step in range(1, TRAIN_NUM_STEPS + 1):
         batch = build_contrastive_batch(
             trajectory,
             buffer,
@@ -132,8 +171,18 @@ def train_torch() -> None:
         if not np.isfinite(loss_val):
             raise RuntimeError(f"Non-finite loss at step {step}")
 
+        with torch.no_grad():
+            pl, nl = model.logits(s, a, s_pos, s_neg)
+            m_pos = float(pl.mean().cpu())
+            m_neg = float(nl.mean().cpu())
+            m_margin = float((pl - nl).mean().cpu())
+
+        print(format_train_config_compact(cfg))
         print(f"[Train] step = {step}")
         print(f"[Train] loss = {loss_val}")
+        print(f"[Train] mean_pos_logit = {m_pos}")
+        print(f"[Train] mean_neg_logit = {m_neg}")
+        print(f"[Train] mean_pos_minus_neg_logit = {m_margin}")
 
     ckpt_path = ROOT / "checkpoints" / "contrastive_baseline.pt"
     ckpt_path.parent.mkdir(parents=True, exist_ok=True)
@@ -144,9 +193,14 @@ def train_torch() -> None:
             "n_actions": n_actions,
             "train_device": str(device),
             "backend": "torch",
+            "train_config": cfg,
+            "train_config_json": json.dumps(cfg, default=str),
         },
         ckpt_path,
     )
+    print()
+    print("[Checkpoint] saved:", ckpt_path)
+    _print_config_header(format_train_config_lines(cfg))
 
 
 def train_numpy() -> None:
@@ -155,22 +209,30 @@ def train_numpy() -> None:
         "(e.g. torch_cuda.dll / WinError 127). Training still runs without fixing PyTorch."
     )
 
-    trajectory, buffer, state_dim, n_actions, T, k, rng = collect_episode(0)
+    trajectory, buffer, state_dim, n_actions, T, k, rng = collect_episode(
+        TRAIN_SEED, TRAIN_ENV_ID
+    )
+
+    batch_size = min(32, T - k)
+    cfg = build_train_config(
+        backend="numpy",
+        device="cpu",
+        batch_size=batch_size,
+        k=k,
+        lr=TRAIN_NUMPY_LR,
+    )
+    _print_config_header(format_train_config_lines(cfg))
 
     model = ContrastiveCriticNumpy(
         state_dim=state_dim,
         n_actions=n_actions,
-        hidden=128,
-        emb_dim=64,
-        tau=0.07,
-        seed=0,
+        hidden=TRAIN_HIDDEN,
+        emb_dim=TRAIN_EMB_DIM,
+        tau=TRAIN_TAU,
+        seed=TRAIN_SEED,
     )
 
-    batch_size = min(32, T - k)
-    num_steps = 50
-    lr = 1e-2
-
-    for step in range(1, num_steps + 1):
+    for step in range(1, TRAIN_NUM_STEPS + 1):
         batch = build_contrastive_batch(
             trajectory,
             buffer,
@@ -187,10 +249,24 @@ def train_numpy() -> None:
         if not np.isfinite(loss):
             raise RuntimeError(f"Non-finite loss at step {step}")
 
-        model.apply_sgd(grads, lr=lr)
+        model.apply_sgd(grads, lr=TRAIN_NUMPY_LR)
 
+        pl, nl = model.logits(
+            batch["s"],
+            batch["a"],
+            batch["s_pos"],
+            batch["s_neg"],
+        )
+        m_pos = float(np.mean(pl))
+        m_neg = float(np.mean(nl))
+        m_margin = float(np.mean(pl - nl))
+
+        print(format_train_config_compact(cfg))
         print(f"[Train] step = {step}")
         print(f"[Train] loss = {loss}")
+        print(f"[Train] mean_pos_logit = {m_pos}")
+        print(f"[Train] mean_neg_logit = {m_neg}")
+        print(f"[Train] mean_pos_minus_neg_logit = {m_margin}")
 
     ckpt_path = ROOT / "checkpoints" / "contrastive_baseline.npz"
     ckpt_path.parent.mkdir(parents=True, exist_ok=True)
@@ -204,7 +280,11 @@ def train_numpy() -> None:
         state_dim=sd["state_dim"],
         n_actions=sd["n_actions"],
         tau=sd["tau"],
+        train_config_json=np.array(json.dumps(cfg, default=str)),
     )
+    print()
+    print("[Checkpoint] saved:", ckpt_path)
+    _print_config_header(format_train_config_lines(cfg))
 
 
 def main() -> None:

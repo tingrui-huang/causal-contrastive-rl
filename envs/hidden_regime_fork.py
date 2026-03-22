@@ -4,9 +4,16 @@ Hidden regime fork: two map layouts differ only in which branch to the goal is o
 At each reset, sample ``U ∈ {0,1}`` (when ``confound=True``). The observation does not
 contain ``U``; it is exposed only in ``info["confounder"]`` for debugging.
 
-Layout (9×9 interior): goal at top center ``(4, 1)``, agent at bottom center ``(4, 7)``
-facing up. A vertical trunk leads to a fork at ``(4, 3)``; left vs right detour merges
-at ``(4, 2)`` before the goal. Exactly one branch is blocked by a wall depending on ``U``.
+**Layout (default size 15×15):** goal at top center ``(cx, 1)``, agent at bottom center
+``(cx, height-2)`` facing up. A **long** vertical corridor runs the full center column
+from the goal up to the bottom row. The left/right detour sits at ``fork_row`` (default 4),
+far enough **above** the starting position that, with MiniGrid's 7×7 egocentric view
+(facing up), the fork and side barriers are **outside** the field of view for the first
+few ``forward`` steps — so ``U=0`` vs ``U=1`` yield identical ``obs["image"]`` at reset
+and after 1–2 forwards (same seed), while futures still diverge once the agent approaches
+the fork.
+
+See ``experiments/inspect_hidden_fork.py`` to verify aliasing.
 """
 from __future__ import annotations
 
@@ -19,27 +26,48 @@ from minigrid.core.world_object import Goal, Wall
 from minigrid.minigrid_env import MiniGridEnv
 
 
+# Row where left/right branches split (must stay "above" the 7×7 view for agent at
+# bottom for the first ~2 forward steps; validated with size >= 15).
+_DEFAULT_FORK_ROW = 4
+
+
 class HiddenRegimeForkEnv(MiniGridEnv):
     """
     Parameters
     ----------
     size
-        Full grid size (default 9). Inner walkable region is ``(1..size-2)``.
+        Full grid size (odd, **>= 15** recommended for early-step observation aliasing).
     confound
-        If True, sample ``U`` each episode. If False, fix ``U=0`` (single clean layout).
+        If True, sample ``U`` each episode (unless ``fixed_u`` is set). If False, fix ``U=0``.
+    fixed_u
+        If ``0`` or ``1``, always use this regime (for diagnostics / inspection). Ignored when
+        ``None``. When set, overrides random sampling even if ``confound=True``.
+    fork_row
+        Grid row ``y`` of the fork (smaller ``y`` = higher on screen). Default 4.
     """
 
     def __init__(
         self,
-        size: int = 9,
+        size: int = 15,
         confound: bool = True,
+        fixed_u: int | None = None,
+        fork_row: int | None = None,
         max_steps: int | None = None,
         **kwargs: Any,
     ) -> None:
         assert size >= 7 and size % 2 == 1, "size must be odd and >= 7"
+        if size < 15:
+            raise ValueError(
+                "HiddenRegimeForkEnv needs size >= 15 so the fork sits outside the "
+                "initial 7×7 view (reset + 1–2 forward). Use a larger grid."
+            )
         self._size = size
         self.confound = confound
+        if fixed_u is not None and fixed_u not in (0, 1):
+            raise ValueError("fixed_u must be None, 0, or 1")
+        self.fixed_u: int | None = fixed_u
         self.hidden_u: int = 0
+        self._fork_row = int(fork_row) if fork_row is not None else _DEFAULT_FORK_ROW
 
         mission_space = MissionSpace(mission_func=lambda: "reach the goal at the top")
 
@@ -55,10 +83,16 @@ class HiddenRegimeForkEnv(MiniGridEnv):
         )
 
     def _gen_grid(self, width: int, height: int) -> None:
-        if self.confound:
+        if self.fixed_u is not None:
+            self.hidden_u = int(self.fixed_u)
+        elif self.confound:
             self.hidden_u = int(self.np_random.integers(0, 2))
         else:
             self.hidden_u = 0
+
+        bottom = height - 2
+        if not (1 < self._fork_row < bottom - 1):
+            raise ValueError("fork_row must be strictly inside the inner grid above the agent.")
 
         self.grid = Grid(width, height)
         self.grid.wall_rect(0, 0, width, height)
@@ -73,7 +107,7 @@ class HiddenRegimeForkEnv(MiniGridEnv):
         cx = width // 2
         self.put_obj(Goal(), cx, 1)
 
-        self.agent_pos = (cx, height - 2)
+        self.agent_pos = (cx, bottom)
         self.agent_dir = 3  # up (negative y)
         self.mission = "reach the goal at the top"
 
@@ -81,13 +115,17 @@ class HiddenRegimeForkEnv(MiniGridEnv):
         """Return floor cells for regime ``u`` (0 = left branch open, 1 = right)."""
         cx = width // 2
         bottom = height - 2
-        # Vertical trunk from fork row y=3 up to start row, then (cx,2),(cx,1)
-        cells = {(cx, y) for y in range(3, bottom + 1)}
-        cells.update({(cx, 2), (cx, 1)})
+        f = self._fork_row
+
+        # Full center spine: goal at (cx,1) up to bottom start — long trunk before fork.
+        cells = {(cx, y) for y in range(1, bottom + 1)}
+
+        # One-step side detour at the fork (left vs right); the other side is wall-filled.
         if u == 0:
-            cells.update({(cx - 1, 3), (cx - 1, 2)})
+            cells.update({(cx - 1, f), (cx - 1, f - 1)})
         else:
-            cells.update({(cx + 1, 3), (cx + 1, 2)})
+            cells.update({(cx + 1, f), (cx + 1, f - 1)})
+
         return cells
 
     def reset(

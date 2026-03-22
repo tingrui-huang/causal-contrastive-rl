@@ -8,8 +8,8 @@ Documented behavior:
   NumPy vectors from ``utils.preprocess.extract_state`` applied to ``obs`` /
   ``next_obs`` (not raw dict observations).
 
-Phase 7: use ``--env CausalContrastive-HiddenFork-9x9-v0`` (confounded) or
-``CausalContrastive-HiddenFork-9x9-Clean-v0`` (fixed layout). Requires ``import envs``.
+Phase 7: use ``--env CausalContrastive-HiddenFork-15x15-v0`` (confounded) or
+``CausalContrastive-HiddenFork-15x15-Clean-v0`` (fixed layout). Requires ``import envs``.
 """
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ import numpy as np
 
 import envs  # noqa: F401 — register CausalContrastive-* envs
 
+from configs.pipeline_defaults import DEFAULT_PIPELINE_ENV_ID
 from buffers.replay_buffer import ReplayBuffer
 from utils.collector import rollout_episode
 from utils.preprocess import extract_state
@@ -55,8 +56,11 @@ def main() -> None:
     parser.add_argument(
         "--env",
         type=str,
-        default="MiniGrid-Empty-5x5-v0",
-        help="Gymnasium env id (e.g. MiniGrid-Empty-5x5-v0, CausalContrastive-HiddenFork-9x9-v0).",
+        default=DEFAULT_PIPELINE_ENV_ID,
+        help=(
+            "Gymnasium env id. Default comes from configs/pipeline_defaults.py "
+            "(edit DEFAULT_PIPELINE_ENV_ID there to avoid long CLI each time)."
+        ),
     )
     args = parser.parse_args()
 
@@ -91,6 +95,11 @@ def main() -> None:
             raise ValueError("Non-finite values in buffered processed states.")
 
     traj_len = len(trajectory)
+
+    raw = env.unwrapped
+    u_dbg = getattr(raw, "hidden_u", None)
+    if u_dbg is not None:
+        print(f"[Pipeline] confounder = {int(u_dbg)}")
 
     print(f"[Pipeline] trajectory length = {traj_len}")
     print(f"[Pipeline] processed state shape = {tuple(int(x) for x in state_shape)}")

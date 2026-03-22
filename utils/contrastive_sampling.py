@@ -2,7 +2,7 @@
 Contrastive tuple construction: (s, a, s+, s-).
 
 Design (Phase 5 baseline):
-- Fixed ``k`` (default ``K=2``): positive is the processed state at ``t+k`` in the
+- Fixed ``k`` (default ``K=4``): positive is the processed state at ``t+k`` in the
   same trajectory as anchor ``t``.
 - Negative: ``state`` field from a uniformly random transition in the replay buffer.
 - Anchor indices ``t`` are sampled uniformly from valid set ``{0, ..., T-1-k}``
@@ -15,7 +15,9 @@ import numpy as np
 from utils.preprocess import extract_state
 
 # Default horizon offset for positive pairs (fixed per project decision).
-DEFAULT_K = 2
+# Align with HiddenFork: U0 vs U1 observations first diverge after k=3 forward steps, so k=4
+# positives (s_{t+4}) can lie past that boundary for early anchors.
+DEFAULT_K = 4
 
 
 def _trajectory_states(trajectory: list[dict]) -> np.ndarray:

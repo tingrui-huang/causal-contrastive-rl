@@ -338,7 +338,7 @@ python experiments/smoke_contrastive.py
 - **Positive \(s^+\):** future state in the **same** trajectory at offset \(+k\) (fixed \(k\), document default).
 - **Negative \(s^-\):** random state from buffer (or random transition’s `next_obs`—document one rule and stick to it).
 
-**Repository defaults (see `README.md`):** \(k=2\); negative is the **`state`** field of a uniformly sampled buffer transition; anchor indices \(t\) are drawn **uniformly with replacement** from \(\{0,\ldots,T-1-k\}\) (not full enumeration). Implementation: `utils/contrastive_sampling.py`, smoke: `experiments/smoke_contrastive.py`.
+**Repository defaults (see `README.md`):** \(k=4\) (see `DEFAULT_K` in `utils/contrastive_sampling.py`); negative is the **`state`** field of a uniformly sampled buffer transition; anchor indices \(t\) are drawn **uniformly with replacement** from \(\{0,\ldots,T-1-k\}\) (not full enumeration). Implementation: `utils/contrastive_sampling.py`, smoke: `experiments/smoke_contrastive.py`.
 
 **Required logging (exact lines):**
 
@@ -386,12 +386,28 @@ python experiments/train_contrastive_baseline.py
 
 Prefixes: `[Train] step = ` and `[Train] loss = ` (spaces as shown).
 
+**Recommended (exact prefixes) — contrastive separation:**
+
+```text
+[Train] mean_pos_logit = <float>
+[Train] mean_neg_logit = <float>
+[Train] mean_pos_minus_neg_logit = <float>
+```
+
+Use these to compare **clean vs confounded** (larger margin usually means easier pos/neg separation). Printed each step in `train_contrastive_baseline.py`.
+
+**Configuration (STRICT for training scripts):**
+
+- **Single source of truth:** `configs/training_defaults.py` — set **`TRAIN_SEED`**, **`TRAIN_ENV_ID`**, and other training hyperparameters there (no scattered seed literals in `train_contrastive_baseline.py`).
+- **Exceptions** (keep local seeds / demos): `experiments/run_pipeline.py`, `experiments/smoke_contrastive.py`, `experiments/run_random.py`.
+- **Logging:** Each training step prints a full **`[Config] ...` one-line block** (all keys) immediately before the `[Train]` lines; a multiline `[Config]` header runs at start; checkpoint save repeats the multiline `[Config]`. Checkpoints store **`train_config`** / **`train_config_json`**.
+
 **Success criteria (STRICT):**
 
 - Loss is finite; no `NaN` over a short run.
 - Checkpoint or final weights can be saved/loaded (optional but recommended—document).
 
-**Repository defaults:** `agents/contrastive_critic.py` + `experiments/train_contrastive_baseline.py`; 50 train steps; checkpoint at `checkpoints/contrastive_baseline.pt`. If `import torch` fails (e.g. Windows CUDA DLL errors), the training script falls back to **`agents/contrastive_critic_numpy.py`** and saves **`checkpoints/contrastive_baseline.npz`**. See `README.md`.
+**Repository defaults:** `agents/contrastive_critic.py` + `experiments/train_contrastive_baseline.py`; defaults from `configs/training_defaults.py` (e.g. 50 train steps); checkpoint at `checkpoints/contrastive_baseline.pt`. If `import torch` fails (e.g. Windows CUDA DLL errors), the training script falls back to **`agents/contrastive_critic_numpy.py`** and saves **`checkpoints/contrastive_baseline.npz`**. See `README.md`.
 
 ---
 
@@ -419,7 +435,7 @@ python experiments/run_pipeline.py --env <confounded_env_id>
 - Same logging contracts as Phase 0–4 still hold (including Phase 4’s five-line contract).
 - A short experiment script documents **expected degradation** of the Phase 6 baseline under confounding (qualitative log or metric—document).
 
-**Repository defaults:** `envs/hidden_regime_fork.py` — `HiddenRegimeForkEnv` with **goal** at top center and **fork** that opens left vs right depending on hidden **`U`** (sampled in `_gen_grid`; **`U ∉ obs`**, `info["confounder"]` for debug). **`CausalContrastive-HiddenFork-9x9-v0`** (confounded) vs **`CausalContrastive-HiddenFork-9x9-Clean-v0`** (fixed `U=0`). See `README.md`.
+**Repository defaults:** `envs/hidden_regime_fork.py` — `HiddenRegimeForkEnv` with **goal** at top center, **long center trunk**, and **fork** that opens left vs right depending on hidden **`U`** (sampled in `_gen_grid`; **`U ∉ obs`**, `info["confounder"]` for debug). **`CausalContrastive-HiddenFork-15x15-v0`** (confounded) vs **`CausalContrastive-HiddenFork-15x15-Clean-v0`** (fixed `U=0`). See `README.md`.
 
 ---
 

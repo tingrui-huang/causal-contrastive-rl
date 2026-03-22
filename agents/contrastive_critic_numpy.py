@@ -83,6 +83,21 @@ class ContrastiveCriticNumpy:
         x = np.concatenate([s, oh], axis=1)
         return _embed_forward(x, self.W1, self.b1, self.W2, self.b2)
 
+    def logits(
+        self,
+        s: np.ndarray,
+        a: np.ndarray,
+        s_pos: np.ndarray,
+        s_neg: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Batch pos/neg logits (same definition as in loss)."""
+        ha, _ = self._embed(s, a)
+        hpos, _ = self._embed(s_pos, a)
+        hneg, _ = self._embed(s_neg, a)
+        pos_logit = np.sum(ha * hpos, axis=1) / self.tau
+        neg_logit = np.sum(ha * hneg, axis=1) / self.tau
+        return pos_logit, neg_logit
+
     def loss_and_grads(
         self,
         s: np.ndarray,

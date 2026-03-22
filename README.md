@@ -20,7 +20,7 @@ causal-contrastive-rl/
 ├── agents/            # contrastive RL / causal variants
 ├── buffers/           # replay + contrastive sampling
 ├── experiments/       # runnable scripts (smoke tests, training)
-├── configs/           # hyperparameter configs
+├── configs/           # hyperparameter configs (`training_defaults.py` = seed + env for training)
 ├── utils/             # collector, preprocessing, helpers
 ├── main.py
 ├── requirements.txt
@@ -40,7 +40,7 @@ python experiments/run_random.py
 ## Phase 5 — contrastive tuples (baseline)
 
 - **Code:** `utils/contrastive_sampling.py` (`build_contrastive_batch`), smoke: `experiments/smoke_contrastive.py`.
-- **Fixed** \(k = 2\): positive \(s^+\) is the processed state at index \(t+k\) on the **same** trajectory as anchor \(t\).
+- **Fixed** \(k = 4\) (`DEFAULT_K` in `utils/contrastive_sampling.py`): positive \(s^+\) is the processed state at index \(t+k\) on the **same** trajectory as anchor \(t\).
 - **Negative** \(s^-\): `state` from a uniformly random transition in the replay buffer.
 - **Anchors:** minibatch indices \(t\) sampled **uniformly with replacement** from valid anchors \(\{0,\ldots,T-1-k\}\) (not full enumeration).
 
@@ -52,7 +52,7 @@ python experiments/smoke_contrastive.py
 
 - **Torch:** `agents/contrastive_critic.py` — MLP on `concat(state, one_hot(action))`, L2-normalized embeddings, 2-way softmax contrastive loss.
 - **NumPy fallback:** `agents/contrastive_critic_numpy.py` — same objective; SGD; used when `import torch` fails (common on Windows with broken CUDA DLLs).
-- **Train:** `experiments/train_contrastive_baseline.py` — one episode → buffer → **50** steps with `build_contrastive_batch`, logs `[Train] step =` / `[Train] loss =` each step.
+- **Train:** `experiments/train_contrastive_baseline.py` — one episode → buffer → **50** steps with `build_contrastive_batch`, logs **`[Config] ...`** (full run settings: **seed**, **env_id**, inferred **has_hidden_confounder**, **k**, **lr**, etc.) before each `[Train]` block, then `[Train] step =` / `[Train] loss =`, plus **`[Train] mean_pos_logit`**, **`mean_neg_logit`**, **`mean_pos_minus_neg_logit`**. **Change `TRAIN_SEED` and `TRAIN_ENV_ID` only in `configs/training_defaults.py`** (exceptions: `run_pipeline.py`, `smoke_contrastive.py`, `run_random.py`).
 
 ```bash
 python experiments/train_contrastive_baseline.py
@@ -79,21 +79,39 @@ pip install torch --index-url https://download.pytorch.org/whl/cpu
 Custom MiniGrid: **`envs/hidden_regime_fork.py`** (`HiddenRegimeForkEnv`). At each `reset`, a binary **`U`** is drawn in **`_gen_grid`** (only if `confound=True`); **`U` is not in `obs`**, only in **`info["confounder"]`** for debugging.
 
 - **Goal:** top-center `(cx, 1)`. **Agent:** bottom-center `(cx, size-2)` facing up.
-- **Fork:** trunk on column `cx` to row `y=3`; **left** detour `(cx−1,3),(cx−1,2)` vs **right** `(cx+1,3),(cx+1,2)`; shared row `(cx,2)` then goal. **Exactly one** side is open: `U=0` → left open, `U=1` → right open (the other branch cells are walls).
+- **Long trunk:** full **center column** `(cx, y)` for `y = 1 … bottom` so the fork is far from the start. **Fork** at `fork_row` (default **4**): **left** detour `(cx−1,f),(cx−1,f−1)` vs **right** `(cx+1,f),(cx+1,f−1)`; **exactly one** side open depending on `U`. With **size ≥ 15**, the fork sits **outside** the 7×7 view for reset + 1–2 `forward` (see `inspect_hidden_fork.py`).
 - **Clean baseline:** `confound=False` fixes `U=0` every episode.
 
 Registered ids (import **`envs`** before `gym.make` — `run_pipeline.py` already does):
 
 | Env id | Meaning |
 |--------|--------|
-| `CausalContrastive-HiddenFork-9x9-v0` | `confound=True`, random `U` |
-| `CausalContrastive-HiddenFork-9x9-Clean-v0` | `confound=False`, fixed layout |
+| `CausalContrastive-HiddenFork-15x15-v0` | `confound=True`, random `U` |
+| `CausalContrastive-HiddenFork-15x15-Clean-v0` | `confound=False`, fixed layout |
 
 **Phase 4 pipeline:**
 
 ```bash
-python experiments/run_pipeline.py --env CausalContrastive-HiddenFork-9x9-v0
-python experiments/run_pipeline.py --env CausalContrastive-HiddenFork-9x9-Clean-v0
+python experiments/run_pipeline.py --env CausalContrastive-HiddenFork-15x15-v0
+python experiments/run_pipeline.py --env CausalContrastive-HiddenFork-15x15-Clean-v0
 ```
 
 **Research wording:** interpret as **latent map regime** changing reachable futures (not textbook policy confounding unless you add a behavioral policy). Phase 8+ is for pessimistic / causal fixes.
+
+**Default env without typing CLI:** edit **`configs/pipeline_defaults.py`** → `DEFAULT_PIPELINE_ENV_ID`, then run:
+
+```bash
+python experiments/run_pipeline.py
+```
+
+`--env` still overrides that default.
+
+**Diagnostics** (initial obs, 1–2 forward, **scan** `k=0..12` for first **U0 vs U1** image divergence — aligns with contrastive `k`; reset seed = **`configs/training_defaults.TRAIN_SEED`**):
+
+```bash
+python experiments/inspect_hidden_fork.py
+```
+
+If the scan says divergence starts at step `m` but `DEFAULT_K` in `utils/contrastive_sampling.py` is smaller, early positives may still be regime-agnostic; adjust `k` or the map.
+
+`HiddenRegimeForkEnv` accepts **`fixed_u=0` or `fixed_u=1`** via `gym.make(..., fixed_u=0)` for tests (forces regime when `confound=True`). Pipeline prints **`[Pipeline] confounder = ...`** when the env exposes `hidden_u`.
