@@ -27,6 +27,7 @@ from typing import Any
 import gymnasium as gym
 import minigrid  # noqa: F401
 import numpy as np
+from minigrid.core.actions import Actions
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -40,14 +41,17 @@ from agents.contrastive_critic_numpy import (  # noqa: E402
 )
 from buffers.replay_buffer import ReplayBuffer  # noqa: E402
 from configs.training_defaults import (  # noqa: E402
+    ROBUST_V1_COLLECTOR_MODE,
+    ROBUST_V1_LOGIT_SCALE,
+    ROBUST_V1_ORACLE_EPSILON,
     ROBUST_V1_M,
+    ROBUST_V1_NUM_EPISODES,
     ROBUST_V1_P,
     ROBUST_V1_W,
     TRAIN_EMB_DIM,
     TRAIN_ENV_ID,
     TRAIN_HIDDEN,
     TRAIN_MAX_EPISODE_STEPS,
-    TRAIN_NUM_EPISODES,
     TRAIN_NUMPY_LR,
     TRAIN_NUM_STEPS,
     TRAIN_REPLAY_CAPACITY,
@@ -69,6 +73,92 @@ def _build_random_policy(env: gym.Env):
     return policy
 
 
+def _desired_dir(src: tuple[int, int], dst: tuple[int, int]) -> int:
+    sx, sy = src
+    dx, dy = dst
+    if dx == sx + 1 and dy == sy:
+        return 0  # right
+    if dx == sx and dy == sy + 1:
+        return 1  # down
+    if dx == sx - 1 and dy == sy:
+        return 2  # left
+    if dx == sx and dy == sy - 1:
+        return 3  # up
+    raise ValueError(f"Non-adjacent move requested: {src} -> {dst}")
+
+
+def _turn_toward(cur_dir: int, target_dir: int) -> int:
+    if cur_dir == target_dir:
+        return int(Actions.forward)
+    if (cur_dir - 1) % 4 == target_dir:
+        return int(Actions.left)
+    if (cur_dir + 1) % 4 == target_dir:
+        return int(Actions.right)
+    # Opposite direction: two turns needed; pick a deterministic side.
+    return int(Actions.left)
+
+
+def _oracle_target_cell(env: gym.Env) -> tuple[int, int]:
+    raw = env.unwrapped
+    ax, ay = raw.agent_pos
+    cx = raw.width // 2
+    fork_row = int(raw._fork_row)
+    u = int(raw.hidden_u)
+
+    if ay > fork_row:
+        return (cx, ay - 1)
+    if ay == fork_row and ax == cx:
+        return (cx - 1, ay) if u == 0 else (cx + 1, ay)
+    if ay == fork_row and ax != cx:
+        return (ax, ay - 1)
+    if ay == fork_row - 1 and ax != cx:
+        return (cx, ay)
+    if ay > 1:
+        return (cx, ay - 1)
+    return (ax, ay)
+
+
+def build_oracle_eps_policy(
+    env: gym.Env,
+    *,
+    epsilon: float,
+    seed: int,
+):
+    rng = np.random.default_rng(seed)
+
+    def policy(_obs):
+        if rng.random() < epsilon:
+            return env.action_space.sample()
+
+        raw = env.unwrapped
+        src = tuple(raw.agent_pos)
+        dst = _oracle_target_cell(env)
+        if src == dst:
+            return env.action_space.sample()
+        target_dir = _desired_dir(src, dst)
+        return _turn_toward(int(raw.agent_dir), target_dir)
+
+    return policy
+
+
+def _build_policy(
+    env: gym.Env,
+    *,
+    collector_mode: str,
+    oracle_epsilon: float,
+    seed: int,
+):
+    if collector_mode == "random":
+        return _build_random_policy(env)
+    if collector_mode == "oracle_eps":
+        return build_oracle_eps_policy(
+            env,
+            epsilon=oracle_epsilon,
+            seed=seed,
+        )
+    raise ValueError(f"Unknown collector_mode: {collector_mode!r}")
+
+
 def _processed_transition(trans: dict) -> dict:
     return {
         "state": extract_state(trans["obs"]),
@@ -79,7 +169,15 @@ def _processed_transition(trans: dict) -> dict:
     }
 
 
-def collect_episodes(seed: int, env_id: str, num_episodes: int, P: int):
+def collect_episodes(
+    seed: int,
+    env_id: str,
+    num_episodes: int,
+    P: int,
+    *,
+    collector_mode: str,
+    oracle_epsilon: float,
+):
     """Roll out multiple episodes; positives stay within an episode, negatives use global buffer."""
     rng = np.random.default_rng(seed)
     buffer = ReplayBuffer(capacity=TRAIN_REPLAY_CAPACITY, seed=seed)
@@ -97,7 +195,12 @@ def collect_episodes(seed: int, env_id: str, num_episodes: int, P: int):
         env.action_space.seed(ep_seed)
         if n_actions is None:
             n_actions = int(env.action_space.n)
-        policy = _build_random_policy(env)
+        policy = _build_policy(
+            env,
+            collector_mode=collector_mode,
+            oracle_epsilon=oracle_epsilon,
+            seed=ep_seed,
+        )
         trajectory = rollout_episode(
             env, policy, max_steps=TRAIN_MAX_EPISODE_STEPS, seed=ep_seed
         )
@@ -172,6 +275,9 @@ def train_numpy_robust_v1(
     P: int,
     M: int,
     w: float,
+    collector_mode: str = ROBUST_V1_COLLECTOR_MODE,
+    oracle_epsilon: float = ROBUST_V1_ORACLE_EPSILON,
+    logit_scale: float = ROBUST_V1_LOGIT_SCALE,
     verbose: bool = True,
 ) -> dict[str, Any]:
     # ---- collect data (multi-episode dataset) ----
@@ -187,7 +293,12 @@ def train_numpy_robust_v1(
         k,
         rng,
     ) = collect_episodes(
-        seed=seed, env_id=env_id, num_episodes=num_episodes, P=P
+        seed=seed,
+        env_id=env_id,
+        num_episodes=num_episodes,
+        P=P,
+        collector_mode=collector_mode,
+        oracle_epsilon=oracle_epsilon,
     )
 
     model = ContrastiveCriticNumpy(
@@ -210,6 +321,9 @@ def train_numpy_robust_v1(
         env_id=env_id,
         num_episodes=num_episodes,
     )
+    cfg["collector_mode"] = collector_mode
+    cfg["oracle_epsilon"] = oracle_epsilon if collector_mode == "oracle_eps" else None
+    cfg["logit_scale"] = logit_scale
     if verbose:
         print()
         for line in format_train_config_lines(cfg):
@@ -275,8 +389,8 @@ def train_numpy_robust_v1(
 
         # For the BCE-style robust objective, keep scores in their natural
         # cosine-like range instead of amplifying them by 1/tau.
-        f_pos_obs = np.sum(ha * hpos_obs, axis=1)  # (B,)
-        f_neg_obs = np.sum(ha * hneg_obs, axis=1)  # (B,)
+        f_pos_obs = np.sum(ha * hpos_obs, axis=1) * logit_scale  # (B,)
+        f_neg_obs = np.sum(ha * hneg_obs, axis=1) * logit_scale  # (B,)
 
         # ---- positive surrogate: worst over window ----
         pos_cand_h: list[np.ndarray] = []
@@ -286,7 +400,7 @@ def train_numpy_robust_v1(
             hp, cache_p = model._embed(pos_cand_states[:, p, :], a_batch)
             pos_cand_h.append(hp)
             pos_cand_cache.append(cache_p)
-            f_pos_cand[:, p] = np.sum(ha * hp, axis=1)
+            f_pos_cand[:, p] = np.sum(ha * hp, axis=1) * logit_scale
 
         idx_pos_surr = np.argmin(f_pos_cand, axis=1)  # (B,)
         f_pos_surr = f_pos_cand[np.arange(batch_size), idx_pos_surr]
@@ -300,7 +414,7 @@ def train_numpy_robust_v1(
             hn, cache_j = model._embed(s_neg_cand, a_batch)
             neg_cand_h.append(hn)
             neg_cand_cache.append(cache_j)
-            f_neg_cand[:, j] = np.sum(ha * hn, axis=1)
+            f_neg_cand[:, j] = np.sum(ha * hn, axis=1) * logit_scale
 
         idx_neg_surr = np.argmax(f_neg_cand, axis=1)  # (B,)
         f_neg_surr = f_neg_cand[np.arange(batch_size), idx_neg_surr]
@@ -332,8 +446,8 @@ def train_numpy_robust_v1(
         dh_ha = np.zeros_like(ha)
 
         # observed pos
-        dh_hpos_obs = ha * dL_df_pos_obs[:, None]
-        dh_ha += hpos_obs * dL_df_pos_obs[:, None]
+        dh_hpos_obs = ha * (dL_df_pos_obs[:, None] * logit_scale)
+        dh_ha += hpos_obs * (dL_df_pos_obs[:, None] * logit_scale)
 
         # pos surrogate candidates
         dh_pos_cand: list[np.ndarray] = [
@@ -343,12 +457,16 @@ def train_numpy_robust_v1(
             mask = idx_pos_surr == p
             if not np.any(mask):
                 continue
-            dh_pos_cand[p][mask] = ha[mask] * dL_df_pos_surr[mask, None]
-            dh_ha[mask] += pos_cand_h[p][mask] * dL_df_pos_surr[mask, None]
+            dh_pos_cand[p][mask] = ha[mask] * (
+                dL_df_pos_surr[mask, None] * logit_scale
+            )
+            dh_ha[mask] += pos_cand_h[p][mask] * (
+                dL_df_pos_surr[mask, None] * logit_scale
+            )
 
         # observed neg
-        dh_hneg_obs = ha * dL_df_neg_obs[:, None]
-        dh_ha += hneg_obs * dL_df_neg_obs[:, None]
+        dh_hneg_obs = ha * (dL_df_neg_obs[:, None] * logit_scale)
+        dh_ha += hneg_obs * (dL_df_neg_obs[:, None] * logit_scale)
 
         # negative surrogate candidates
         dh_neg_cand: list[np.ndarray] = [
@@ -358,8 +476,12 @@ def train_numpy_robust_v1(
             mask = idx_neg_surr == j
             if not np.any(mask):
                 continue
-            dh_neg_cand[j][mask] = ha[mask] * dL_df_neg_surr[mask, None]
-            dh_ha[mask] += neg_cand_h[j][mask] * dL_df_neg_surr[mask, None]
+            dh_neg_cand[j][mask] = ha[mask] * (
+                dL_df_neg_surr[mask, None] * logit_scale
+            )
+            dh_ha[mask] += neg_cand_h[j][mask] * (
+                dL_df_neg_surr[mask, None] * logit_scale
+            )
 
         # ---- accumulate parameter grads through embed backward ----
         gW1 = np.zeros_like(model.W1)
@@ -424,6 +546,9 @@ def train_numpy_robust_v1(
         "P": P,
         "M": M,
         "w": w,
+        "logit_scale": logit_scale,
+        "collector_mode": collector_mode,
+        "oracle_epsilon": oracle_epsilon if collector_mode == "oracle_eps" else math.nan,
         "num_train_steps": num_steps,
         "last_loss": losses[-1] if losses else math.nan,
         "last_mean_pos_logit": pos_means[-1] if pos_means else math.nan,
@@ -466,7 +591,7 @@ def main() -> None:
     )
     p.add_argument("--seed", type=int, default=TRAIN_SEED)
     p.add_argument("--env-id", type=str, default=TRAIN_ENV_ID)
-    p.add_argument("--num-episodes", type=int, default=TRAIN_NUM_EPISODES)
+    p.add_argument("--num-episodes", type=int, default=ROBUST_V1_NUM_EPISODES)
     p.add_argument("--num-steps", type=int, default=TRAIN_NUM_STEPS)
     p.add_argument("--lr", type=float, default=TRAIN_NUMPY_LR)
     p.add_argument(
@@ -482,6 +607,23 @@ def main() -> None:
         help="Negative candidate pool size",
     )
     p.add_argument("--w", type=float, default=ROBUST_V1_W, help="Shared weight")
+    p.add_argument(
+        "--logit-scale",
+        type=float,
+        default=ROBUST_V1_LOGIT_SCALE,
+        help="Scale factor applied before BCE/log-sigmoid.",
+    )
+    p.add_argument(
+        "--collector-mode",
+        type=str,
+        default=ROBUST_V1_COLLECTOR_MODE,
+        choices=["random", "oracle_eps"],
+    )
+    p.add_argument(
+        "--oracle-epsilon",
+        type=float,
+        default=ROBUST_V1_ORACLE_EPSILON,
+    )
     p.add_argument("--quiet", action="store_true", help="Disable per-step printing")
     args = p.parse_args()
 
@@ -494,6 +636,9 @@ def main() -> None:
         P=args.P,
         M=args.M,
         w=args.w,
+        collector_mode=args.collector_mode,
+        oracle_epsilon=args.oracle_epsilon,
+        logit_scale=args.logit_scale,
         verbose=not args.quiet,
     )
 

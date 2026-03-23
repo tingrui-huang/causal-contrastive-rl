@@ -68,10 +68,11 @@ Writes `results/hidden_fork_seed_sweep.csv` and prints the same CSV to stdout. U
 
 ## Phase 8 — robust contrastive v1 (NumPy)
 
-- **Train:** `experiments/train_contrastive_robust_v1.py` — bidirectional robust objective with shared **`w=0.5`**, positive window **`P=2`** (`t+k .. t+k+2`), negative candidate pool **`M=16`**, and a **multi-episode** dataset (**default `num_episodes=5`**).
+- **Train:** `experiments/train_contrastive_robust_v1.py` — bidirectional robust objective with shared **`w=0.9`**, positive window **`P=2`** (`t+k .. t+k+2`), negative candidate pool **`M=16`**, **`logit_scale=5.0`**, and a **multi-episode** dataset (**default `num_episodes=50`**).
 - **Diagnostics:** prints usual `[Train]` metrics plus **`[Diag] frac_pos_logit_gt_neg_logit`**, **`[Diag] mean_pos_obs_minus_surr_logit`**, **`[Diag] mean_neg_surr_minus_obs_logit`**.
 - **Reproducibility:** seeds now fix `env.reset`, `action_space.sample()`, replay-buffer sampling, and NumPy model init.
-- **Configuration:** change `TRAIN_NUM_EPISODES`, `ROBUST_V1_W`, `ROBUST_V1_SWEEP_WEIGHTS`, `ROBUST_V1_P`, `ROBUST_V1_M` in `configs/training_defaults.py`.
+- **Collector:** default `collector_mode="oracle_eps"` uses a privileged demonstrator that may read `env.unwrapped.hidden_u` / pose for action selection, but replay items still store only partial-observation states from `obs`.
+- **Configuration:** change `ROBUST_V1_NUM_EPISODES`, `ROBUST_V1_W`, `ROBUST_V1_SWEEP_WEIGHTS`, `ROBUST_V1_P`, `ROBUST_V1_M`, `ROBUST_V1_LOGIT_SCALE`, `ROBUST_V1_COLLECTOR_MODE`, `ROBUST_V1_ORACLE_EPSILON` in `configs/training_defaults.py`.
 
 ```bash
 python experiments/train_contrastive_robust_v1.py
@@ -89,6 +90,8 @@ To tune the shared robust weight, sweep multiple values in one run:
 ```bash
 python experiments/run_hidden_fork_seed_sweep_robust_v1.py --weights 0.5 0.7 0.9
 ```
+
+The current default sweep in config is fixed at `w=0.9`; use `--weights ...` only when you explicitly want a new ablation.
 
 - If PyTorch loads: uses **PyTorch**; device is **`cuda`** when available and a tiny CUDA alloc succeeds, else **`cpu`**. Checkpoint: **`checkpoints/contrastive_baseline.pt`**.
 - If `import torch` **raises** (e.g. `torch_cuda.dll` / WinError 127): automatically uses **NumPy** backend (CPU). Checkpoint: **`checkpoints/contrastive_baseline.npz`**.

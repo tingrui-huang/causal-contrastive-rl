@@ -21,11 +21,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from configs.training_defaults import (
+    ROBUST_V1_COLLECTOR_MODE,
+    ROBUST_V1_LOGIT_SCALE,
+    ROBUST_V1_ORACLE_EPSILON,
     ROBUST_V1_M,
+    ROBUST_V1_NUM_EPISODES,
     ROBUST_V1_P,
     ROBUST_V1_SWEEP_WEIGHTS,
     ROBUST_V1_W,
-    TRAIN_NUM_EPISODES,
     TRAIN_NUMPY_LR,
     TRAIN_NUM_STEPS,
 )
@@ -46,6 +49,9 @@ CSV_FIELDS = [
     "P",
     "M",
     "w",
+    "logit_scale",
+    "collector_mode",
+    "oracle_epsilon",
     "num_train_steps",
     "backend",
     "last_loss",
@@ -83,6 +89,9 @@ def _row_from_result(r: dict) -> dict[str, object]:
         "P": r["P"],
         "M": r["M"],
         "w": r["w"],
+        "logit_scale": r["logit_scale"],
+        "collector_mode": r["collector_mode"],
+        "oracle_epsilon": r["oracle_epsilon"],
         "num_train_steps": r["num_train_steps"],
         "backend": r["backend"],
         "last_loss": r["last_loss"],
@@ -110,6 +119,9 @@ def run_sweep(
     P: int,
     M: int,
     weights: list[float],
+    logit_scale: float,
+    collector_mode: str,
+    oracle_epsilon: float,
 ) -> list[dict[str, object]]:
     print("[Sweep] backend=numpy robust_v1", file=sys.stderr)
     rows: list[dict[str, object]] = []
@@ -130,6 +142,9 @@ def run_sweep(
                     P=P,
                     M=M,
                     w=w,
+                    logit_scale=logit_scale,
+                    collector_mode=collector_mode,
+                    oracle_epsilon=oracle_epsilon,
                     verbose=False,
                 )
                 rows.append(_row_from_result(result))
@@ -156,11 +171,23 @@ def main() -> None:
         default=ROOT / "results" / "hidden_fork_seed_sweep_robust_v1.csv",
         help="CSV path (default: results/hidden_fork_seed_sweep_robust_v1.csv)",
     )
-    p.add_argument("--num-episodes", type=int, default=TRAIN_NUM_EPISODES)
+    p.add_argument("--num-episodes", type=int, default=ROBUST_V1_NUM_EPISODES)
     p.add_argument("--num-steps", type=int, default=TRAIN_NUM_STEPS)
     p.add_argument("--lr", type=float, default=TRAIN_NUMPY_LR)
     p.add_argument("--P", type=int, default=ROBUST_V1_P)
     p.add_argument("--M", type=int, default=ROBUST_V1_M)
+    p.add_argument("--logit-scale", type=float, default=ROBUST_V1_LOGIT_SCALE)
+    p.add_argument(
+        "--collector-mode",
+        type=str,
+        default=ROBUST_V1_COLLECTOR_MODE,
+        choices=["random", "oracle_eps"],
+    )
+    p.add_argument(
+        "--oracle-epsilon",
+        type=float,
+        default=ROBUST_V1_ORACLE_EPSILON,
+    )
     p.add_argument("--w", type=float, default=None)
     p.add_argument(
         "--weights",
@@ -188,6 +215,9 @@ def main() -> None:
         P=args.P,
         M=args.M,
         weights=weights,
+        logit_scale=args.logit_scale,
+        collector_mode=args.collector_mode,
+        oracle_epsilon=args.oracle_epsilon,
     )
 
     if not args.stdout_only:

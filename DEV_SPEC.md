@@ -443,9 +443,48 @@ python experiments/run_pipeline.py --env <confounded_env_id>
 
 **Gate:** Only after confounding reproduces failure of the baseline.
 
-**Direction (aligned with `Contrastive319.pdf`):** Modify how positives enter the loss (e.g. pessimistic \(s^+\) or weighted positive term using a documented \(w(s,a)\) proxy). Treat this as a **new** phase with its own success criteria and logs—do not fold into Phase 6 retroactively.
+**Direction (aligned with `Contrastive319.pdf`):** Modify how positives / negatives enter the loss (e.g. pessimistic surrogate pairs, weighted robust objective, documented \(w(s,a)\) proxy). Treat this as a **new** phase with its own success criteria and logs—do not fold into Phase 6 retroactively.
 
-**Verification command:** Document when the phase is added (new training script + required log prefixes).
+**Current repository implementation (Phase 8 v1):**
+
+- `experiments/train_contrastive_robust_v1.py` — bidirectional robust contrastive objective (NumPy fallback path).
+- Defaults live in `configs/training_defaults.py`:
+  - `ROBUST_V1_NUM_EPISODES`
+  - `ROBUST_V1_W`
+  - `ROBUST_V1_LOGIT_SCALE`
+  - `ROBUST_V1_P`
+  - `ROBUST_V1_M`
+  - `ROBUST_V1_COLLECTOR_MODE`
+  - `ROBUST_V1_ORACLE_EPSILON`
+- `experiments/run_hidden_fork_seed_sweep_robust_v1.py` — sweep seeds / regimes / weights and write CSV.
+
+**Data-generation contract (STRICT):**
+
+- If `collector_mode="oracle_eps"`, the demonstrator **may** read privileged env internals (e.g. `env.unwrapped.hidden_u`, `agent_pos`, `agent_dir`) **only to choose actions during rollout**.
+- Stored replay items / training states **must remain partial-observation only** (e.g. `extract_state(obs)`); **never** append `hidden_u` or other privileged values to the learner input.
+- Positive windows (`t+k .. t+k+P`) must stay **within the same episode** as the anchor.
+- Multi-episode datasets are preferred over single-episode training for Phase 8 comparisons.
+- For BCE / log-sigmoid variants, a documented **logit scale** may be applied before the sigmoid; if changed, record it in config/logs/CSV.
+
+**Required logging (Phase 8 robust v1):**
+
+```text
+[Train] step = <int>
+[Train] loss = <float>
+[Train] mean_pos_logit = <float>
+[Train] mean_neg_logit = <float>
+[Train] mean_pos_minus_neg_logit = <float>
+[Diag] frac_pos_logit_gt_neg_logit = <float>
+[Diag] mean_pos_obs_minus_surr_logit = <float>
+[Diag] mean_neg_surr_minus_obs_logit = <float>
+```
+
+**Verification commands:**
+
+```bash
+python experiments/train_contrastive_robust_v1.py
+python experiments/run_hidden_fork_seed_sweep_robust_v1.py
+```
 
 ---
 
