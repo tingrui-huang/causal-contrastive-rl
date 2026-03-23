@@ -61,7 +61,6 @@ from utils.preprocess import extract_state
 if _TORCH_AVAILABLE:
     from agents.contrastive_critic import ContrastiveCritic
 
-
 def build_random_policy(env):
     def policy(_obs):
         return env.action_space.sample()
