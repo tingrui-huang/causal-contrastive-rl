@@ -1,17 +1,12 @@
 """
-Run 10 contrastive-baseline experiments: seeds ``0..4`` ×
-``HiddenFork-15x15-Clean`` vs ``HiddenFork-15x15`` (confounded).
+Run softmax-baseline experiments over seeds × regimes and write CSV.
 
-Uses the same training loop as ``train_contrastive_baseline.py`` but with
-``verbose=False`` and ``save_checkpoint=False`` so checkpoints are not overwritten.
-
-Output: **CSV** (header + one row per run) — printed to stdout and saved under
-``results/`` by default.
-
-```bash
-python experiments/run_hidden_fork_seed_sweep.py
-python experiments/run_hidden_fork_seed_sweep.py -o my_results.csv
-```
+This sweep is intended to be runnable with bare defaults for the current
+fair-comparison setting:
+- NumPy backend
+- multi-episode dataset
+- current collector defaults from ``configs/training_defaults.py``
+- checkpoints saved by default
 """
 from __future__ import annotations
 
@@ -24,15 +19,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from experiments.train_contrastive_baseline import train_numpy, train_torch
-
-_TORCH = False
-try:
-    import torch  # noqa: F401
-
-    _TORCH = True
-except OSError:
-    pass
+from configs.training_defaults import (
+    TRAIN_COLLECTOR_MODE,
+    TRAIN_NUM_EPISODES,
+    TRAIN_NUM_STEPS,
+    TRAIN_ORACLE_EPSILON,
+)
+from experiments.train_contrastive_baseline import train_numpy
 
 ENV_CLEAN = "CausalContrastive-HiddenFork-15x15-Clean-v0"
 ENV_CONF = "CausalContrastive-HiddenFork-15x15-v0"
@@ -45,8 +38,11 @@ CSV_FIELDS = [
     "regime",
     "has_hidden_confounder",
     "trajectory_length",
+    "num_episodes",
     "contrastive_k",
     "batch_size",
+    "collector_mode",
+    "oracle_epsilon",
     "num_train_steps",
     "backend",
     "last_loss",
@@ -73,8 +69,11 @@ def _row_from_result(r: dict) -> dict[str, object]:
         "regime": _regime_label(r["env_id"]),
         "has_hidden_confounder": r["has_hidden_confounder"],
         "trajectory_length": r["trajectory_length"],
+        "num_episodes": r["train_config"].get("num_episodes"),
         "contrastive_k": r["contrastive_k"],
         "batch_size": r["batch_size"],
+        "collector_mode": r["train_config"].get("collector_mode"),
+        "oracle_epsilon": r["train_config"].get("oracle_epsilon"),
         "num_train_steps": r["num_train_steps"],
         "backend": r["backend"],
         "last_loss": r["last_loss"],
@@ -89,19 +88,38 @@ def _row_from_result(r: dict) -> dict[str, object]:
 
 
 def run_sweep() -> list[dict[str, object]]:
-    train = train_torch if _TORCH else train_numpy
-    backend = "torch" if _TORCH else "numpy"
-    print(f"[Sweep] backend={backend}", file=sys.stderr)
+    return run_sweep_config(
+        num_episodes=TRAIN_NUM_EPISODES,
+        num_steps=TRAIN_NUM_STEPS,
+        collector_mode=TRAIN_COLLECTOR_MODE,
+        oracle_epsilon=TRAIN_ORACLE_EPSILON,
+        save_checkpoint=True,
+    )
+
+
+def run_sweep_config(
+    *,
+    num_episodes: int,
+    num_steps: int,
+    collector_mode: str,
+    oracle_epsilon: float,
+    save_checkpoint: bool,
+) -> list[dict[str, object]]:
+    print("[Sweep] backend=numpy", file=sys.stderr)
 
     rows: list[dict[str, object]] = []
     for seed in SEEDS:
         for env_id in (ENV_CLEAN, ENV_CONF):
             print(f"[Sweep] seed={seed} env={env_id!r} ...", file=sys.stderr, flush=True)
-            result = train(
+            result = train_numpy(
                 seed=seed,
                 env_id=env_id,
+                num_episodes=num_episodes,
+                num_steps=num_steps,
+                collector_mode=collector_mode,
+                oracle_epsilon=oracle_epsilon,
                 verbose=False,
-                save_checkpoint=False,
+                save_checkpoint=save_checkpoint,
             )
             rows.append(_row_from_result(result))
     return rows
@@ -117,13 +135,27 @@ def _write_csv(rows: list[dict[str, object]], path: Path) -> None:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="10-run HiddenFork seed × regime sweep → CSV")
+    p = argparse.ArgumentParser(description="HiddenFork baseline seed × regime sweep → CSV")
     p.add_argument(
         "-o",
         "--output",
         type=Path,
         default=ROOT / "results" / "hidden_fork_seed_sweep.csv",
         help="CSV path (default: results/hidden_fork_seed_sweep.csv)",
+    )
+    p.add_argument("--num-episodes", type=int, default=TRAIN_NUM_EPISODES)
+    p.add_argument("--num-steps", type=int, default=TRAIN_NUM_STEPS)
+    p.add_argument(
+        "--collector-mode",
+        type=str,
+        default=TRAIN_COLLECTOR_MODE,
+        choices=["random", "oracle_eps"],
+    )
+    p.add_argument("--oracle-epsilon", type=float, default=TRAIN_ORACLE_EPSILON)
+    p.add_argument(
+        "--no-save-checkpoint",
+        action="store_true",
+        help="Skip writing per-run checkpoints",
     )
     p.add_argument(
         "--stdout-only",
@@ -132,7 +164,13 @@ def main() -> None:
     )
     args = p.parse_args()
 
-    rows = run_sweep()
+    rows = run_sweep_config(
+        num_episodes=args.num_episodes,
+        num_steps=args.num_steps,
+        collector_mode=args.collector_mode,
+        oracle_epsilon=args.oracle_epsilon,
+        save_checkpoint=not args.no_save_checkpoint,
+    )
 
     if not args.stdout_only:
         _write_csv(rows, args.output)

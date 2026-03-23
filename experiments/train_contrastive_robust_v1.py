@@ -19,15 +19,14 @@ This script is designed to be runnable even when PyTorch cannot be imported
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import sys
 from pathlib import Path
 from typing import Any
 
-import gymnasium as gym
 import minigrid  # noqa: F401
 import numpy as np
-from minigrid.core.actions import Actions
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -61,186 +60,8 @@ from configs.training_defaults import (  # noqa: E402
     format_train_config_compact,
     format_train_config_lines,
 )
-from utils.collector import rollout_episode  # noqa: E402
 from utils.contrastive_sampling import DEFAULT_K  # noqa: E402
-from utils.preprocess import extract_state  # noqa: E402
-
-
-def _build_random_policy(env: gym.Env):
-    def policy(_obs):
-        return env.action_space.sample()
-
-    return policy
-
-
-def _desired_dir(src: tuple[int, int], dst: tuple[int, int]) -> int:
-    sx, sy = src
-    dx, dy = dst
-    if dx == sx + 1 and dy == sy:
-        return 0  # right
-    if dx == sx and dy == sy + 1:
-        return 1  # down
-    if dx == sx - 1 and dy == sy:
-        return 2  # left
-    if dx == sx and dy == sy - 1:
-        return 3  # up
-    raise ValueError(f"Non-adjacent move requested: {src} -> {dst}")
-
-
-def _turn_toward(cur_dir: int, target_dir: int) -> int:
-    if cur_dir == target_dir:
-        return int(Actions.forward)
-    if (cur_dir - 1) % 4 == target_dir:
-        return int(Actions.left)
-    if (cur_dir + 1) % 4 == target_dir:
-        return int(Actions.right)
-    # Opposite direction: two turns needed; pick a deterministic side.
-    return int(Actions.left)
-
-
-def _oracle_target_cell(env: gym.Env) -> tuple[int, int]:
-    raw = env.unwrapped
-    ax, ay = raw.agent_pos
-    cx = raw.width // 2
-    fork_row = int(raw._fork_row)
-    u = int(raw.hidden_u)
-
-    if ay > fork_row:
-        return (cx, ay - 1)
-    if ay == fork_row and ax == cx:
-        return (cx - 1, ay) if u == 0 else (cx + 1, ay)
-    if ay == fork_row and ax != cx:
-        return (ax, ay - 1)
-    if ay == fork_row - 1 and ax != cx:
-        return (cx, ay)
-    if ay > 1:
-        return (cx, ay - 1)
-    return (ax, ay)
-
-
-def build_oracle_eps_policy(
-    env: gym.Env,
-    *,
-    epsilon: float,
-    seed: int,
-):
-    rng = np.random.default_rng(seed)
-
-    def policy(_obs):
-        if rng.random() < epsilon:
-            return env.action_space.sample()
-
-        raw = env.unwrapped
-        src = tuple(raw.agent_pos)
-        dst = _oracle_target_cell(env)
-        if src == dst:
-            return env.action_space.sample()
-        target_dir = _desired_dir(src, dst)
-        return _turn_toward(int(raw.agent_dir), target_dir)
-
-    return policy
-
-
-def _build_policy(
-    env: gym.Env,
-    *,
-    collector_mode: str,
-    oracle_epsilon: float,
-    seed: int,
-):
-    if collector_mode == "random":
-        return _build_random_policy(env)
-    if collector_mode == "oracle_eps":
-        return build_oracle_eps_policy(
-            env,
-            epsilon=oracle_epsilon,
-            seed=seed,
-        )
-    raise ValueError(f"Unknown collector_mode: {collector_mode!r}")
-
-
-def _processed_transition(trans: dict) -> dict:
-    return {
-        "state": extract_state(trans["obs"]),
-        "next_state": extract_state(trans["next_obs"]),
-        "action": trans["action"],
-        "reward": trans["reward"],
-        "done": trans["done"],
-    }
-
-
-def collect_episodes(
-    seed: int,
-    env_id: str,
-    num_episodes: int,
-    P: int,
-    *,
-    collector_mode: str,
-    oracle_epsilon: float,
-):
-    """Roll out multiple episodes; positives stay within an episode, negatives use global buffer."""
-    rng = np.random.default_rng(seed)
-    buffer = ReplayBuffer(capacity=TRAIN_REPLAY_CAPACITY, seed=seed)
-    k = DEFAULT_K
-    trajectories: list[list[dict]] = []
-    episode_states: list[np.ndarray] = []
-    episode_actions: list[np.ndarray] = []
-    valid_anchors: list[tuple[int, int]] = []
-    n_actions: int | None = None
-    state_dim: int | None = None
-
-    for ep_idx in range(num_episodes):
-        ep_seed = seed + ep_idx
-        env = gym.make(env_id, render_mode="rgb_array")
-        env.action_space.seed(ep_seed)
-        if n_actions is None:
-            n_actions = int(env.action_space.n)
-        policy = _build_policy(
-            env,
-            collector_mode=collector_mode,
-            oracle_epsilon=oracle_epsilon,
-            seed=ep_seed,
-        )
-        trajectory = rollout_episode(
-            env, policy, max_steps=TRAIN_MAX_EPISODE_STEPS, seed=ep_seed
-        )
-        trajectories.append(trajectory)
-
-        for trans in trajectory:
-            buffer.add(_processed_transition(trans))
-
-        states = np.stack([extract_state(tr["obs"]) for tr in trajectory], axis=0)
-        actions = np.array([tr["action"] for tr in trajectory], dtype=np.int64)
-        episode_states.append(states)
-        episode_actions.append(actions)
-
-        if state_dim is None:
-            state_dim = int(states.shape[1])
-
-        T = len(trajectory)
-        num_valid = T - k - P
-        for t in range(max(0, num_valid)):
-            valid_anchors.append((ep_idx, t))
-
-    if not valid_anchors:
-        raise RuntimeError(
-            f"No valid anchors across {num_episodes} episode(s). Need some episode with "
-            f"T >= k+P+1={k+P+1}. Change TRAIN_SEED/ENV or TRAIN_MAX_EPISODE_STEPS."
-        )
-
-    total_steps = int(sum(len(traj) for traj in trajectories))
-    return (
-        trajectories,
-        episode_states,
-        episode_actions,
-        valid_anchors,
-        buffer,
-        int(state_dim),
-        int(n_actions),
-        total_steps,
-        k,
-        rng,
-    )
+from utils.offline_data import collect_episodes  # noqa: E402
 
 
 def _sigmoid(x: np.ndarray) -> np.ndarray:
@@ -278,6 +99,8 @@ def train_numpy_robust_v1(
     collector_mode: str = ROBUST_V1_COLLECTOR_MODE,
     oracle_epsilon: float = ROBUST_V1_ORACLE_EPSILON,
     logit_scale: float = ROBUST_V1_LOGIT_SCALE,
+    return_model: bool = False,
+    save_checkpoint: bool = True,
     verbose: bool = True,
 ) -> dict[str, Any]:
     # ---- collect data (multi-episode dataset) ----
@@ -296,7 +119,7 @@ def train_numpy_robust_v1(
         seed=seed,
         env_id=env_id,
         num_episodes=num_episodes,
-        P=P,
+        positive_window=P,
         collector_mode=collector_mode,
         oracle_epsilon=oracle_epsilon,
     )
@@ -324,6 +147,10 @@ def train_numpy_robust_v1(
     cfg["collector_mode"] = collector_mode
     cfg["oracle_epsilon"] = oracle_epsilon if collector_mode == "oracle_eps" else None
     cfg["logit_scale"] = logit_scale
+    cfg["num_train_steps"] = num_steps
+    cfg["method"] = "robust_v1"
+    cfg["loss_family"] = "bce_logsigmoid"
+    cfg["w"] = w
     if verbose:
         print()
         for line in format_train_config_lines(cfg):
@@ -582,6 +409,37 @@ def train_numpy_robust_v1(
         ),
         "train_config": cfg,
     }
+    if save_checkpoint:
+        ckpt_dir = ROOT / "checkpoints"
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        env_tag = env_id.replace("/", "_").replace("\\", "_").replace(":", "").replace("-", "_")
+        collector_tag = collector_mode.replace("-", "_")
+        ckpt_path = ckpt_dir / (
+            f"robust_v1_seed{seed}_{env_tag}_w{w:.2f}_{collector_tag}.npz"
+        )
+        sd = model.state_dict()
+        np.savez(
+            ckpt_path,
+            W1=sd["W1"],
+            b1=sd["b1"],
+            W2=sd["W2"],
+            b2=sd["b2"],
+            state_dim=sd["state_dim"],
+            n_actions=sd["n_actions"],
+            tau=sd["tau"],
+            method=np.array("robust_v1"),
+            loss_family=np.array("bce_logsigmoid"),
+            w=np.array(w, dtype=np.float64),
+            train_config_json=np.array(json.dumps(cfg, default=str)),
+        )
+        out["checkpoint_path"] = str(ckpt_path)
+        if verbose:
+            print()
+            print("[Checkpoint] saved:", ckpt_path)
+            for line in format_train_config_lines(cfg):
+                print(line)
+    if return_model:
+        out["model"] = model
     return out
 
 
@@ -624,6 +482,11 @@ def main() -> None:
         type=float,
         default=ROBUST_V1_ORACLE_EPSILON,
     )
+    p.add_argument(
+        "--no-save-checkpoint",
+        action="store_true",
+        help="Skip writing a checkpoint file",
+    )
     p.add_argument("--quiet", action="store_true", help="Disable per-step printing")
     args = p.parse_args()
 
@@ -639,6 +502,7 @@ def main() -> None:
         collector_mode=args.collector_mode,
         oracle_epsilon=args.oracle_epsilon,
         logit_scale=args.logit_scale,
+        save_checkpoint=not args.no_save_checkpoint,
         verbose=not args.quiet,
     )
 

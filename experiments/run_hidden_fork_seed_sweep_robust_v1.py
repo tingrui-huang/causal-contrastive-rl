@@ -1,12 +1,8 @@
 """
 Run robust-v1 experiments over seeds / regimes / weights.
 
-Uses ``train_contrastive_robust_v1.py`` with the current Phase 8 v1 defaults:
-- shared weight ``w`` (single value or sweep)
-- positive window P = 2
-- negative candidate pool M = 16
-
-Output: CSV to stdout and, by default, to ``results/hidden_fork_seed_sweep_robust_v1.csv``.
+Bare defaults are intended to match the current fair-comparison setting and
+save checkpoints by default.
 """
 
 from __future__ import annotations
@@ -122,6 +118,7 @@ def run_sweep(
     logit_scale: float,
     collector_mode: str,
     oracle_epsilon: float,
+    save_checkpoint: bool,
 ) -> list[dict[str, object]]:
     print("[Sweep] backend=numpy robust_v1", file=sys.stderr)
     rows: list[dict[str, object]] = []
@@ -145,6 +142,7 @@ def run_sweep(
                     logit_scale=logit_scale,
                     collector_mode=collector_mode,
                     oracle_epsilon=oracle_epsilon,
+                    save_checkpoint=save_checkpoint,
                     verbose=False,
                 )
                 rows.append(_row_from_result(result))
@@ -200,6 +198,11 @@ def main() -> None:
         action="store_true",
         help="Print CSV to stdout only; do not write a file",
     )
+    p.add_argument(
+        "--no-save-checkpoint",
+        action="store_true",
+        help="Skip writing per-run checkpoints",
+    )
     args = p.parse_args()
 
     if args.weights is not None:
@@ -218,6 +221,7 @@ def main() -> None:
         logit_scale=args.logit_scale,
         collector_mode=args.collector_mode,
         oracle_epsilon=args.oracle_epsilon,
+        save_checkpoint=not args.no_save_checkpoint,
     )
 
     if not args.stdout_only:

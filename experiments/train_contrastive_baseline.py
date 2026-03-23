@@ -14,6 +14,8 @@ Verification: ``python experiments/train_contrastive_baseline.py``
 """
 from __future__ import annotations
 
+import argparse
+import csv
 import json
 import sys
 from pathlib import Path
@@ -41,12 +43,14 @@ from agents.contrastive_critic_numpy import ContrastiveCriticNumpy
 from buffers.replay_buffer import ReplayBuffer
 from configs.training_defaults import (
     TRAIN_EMB_DIM,
+    TRAIN_COLLECTOR_MODE,
     TRAIN_ENV_ID,
     TRAIN_HIDDEN,
     TRAIN_MAX_EPISODE_STEPS,
+    TRAIN_NUM_EPISODES,
     TRAIN_NUMPY_LR,
     TRAIN_NUM_STEPS,
-    TRAIN_REPLAY_CAPACITY,
+    TRAIN_ORACLE_EPSILON,
     TRAIN_SEED,
     TRAIN_TAU,
     TRAIN_TORCH_LR,
@@ -54,55 +58,67 @@ from configs.training_defaults import (
     format_train_config_compact,
     format_train_config_lines,
 )
-from utils.collector import rollout_episode
-from utils.contrastive_sampling import DEFAULT_K, build_contrastive_batch
-from utils.preprocess import extract_state
+from utils.offline_data import collect_episodes
 
 if _TORCH_AVAILABLE:
     from agents.contrastive_critic import ContrastiveCritic
 
-def build_random_policy(env):
-    def policy(_obs):
-        return env.action_space.sample()
 
-    return policy
+RESULT_FIELDS = [
+    "seed",
+    "env_id",
+    "has_hidden_confounder",
+    "trajectory_length",
+    "contrastive_k",
+    "batch_size",
+    "num_train_steps",
+    "backend",
+    "last_loss",
+    "last_mean_pos_logit",
+    "last_mean_neg_logit",
+    "last_mean_pos_minus_neg_logit",
+    "mean_loss",
+    "mean_mean_pos_logit",
+    "mean_mean_neg_logit",
+    "mean_mean_pos_minus_neg_logit",
+    "checkpoint_path",
+]
 
 
-def processed_transition(trans: dict) -> dict:
-    return {
-        "state": extract_state(trans["obs"]),
-        "next_state": extract_state(trans["next_obs"]),
-        "action": trans["action"],
-        "reward": trans["reward"],
-        "done": trans["done"],
-    }
-
-
-def collect_episode(seed: int, env_id: str):
-    """Roll out one episode, fill replay buffer; return trajectory + dims."""
-    rng = np.random.default_rng(seed)
-    env = gym.make(env_id, render_mode="rgb_array")
-    env.action_space.seed(seed)
-    n_actions = int(env.action_space.n)
-    policy = build_random_policy(env)
-    trajectory = rollout_episode(
-        env, policy, max_steps=TRAIN_MAX_EPISODE_STEPS, seed=seed
+def _build_multi_episode_batch(
+    *,
+    episode_states: list[np.ndarray],
+    episode_actions: list[np.ndarray],
+    valid_anchors: list[tuple[int, int]],
+    buffer: ReplayBuffer,
+    state_dim: int,
+    k: int,
+    batch_size: int,
+    rng: np.random.Generator,
+) -> dict[str, np.ndarray]:
+    anchor_ids = rng.integers(low=0, high=len(valid_anchors), size=batch_size)
+    anchor_pairs = [valid_anchors[int(i)] for i in anchor_ids]
+    s_batch = np.stack(
+        [episode_states[ep_idx][t] for ep_idx, t in anchor_pairs], axis=0
+    ).astype(np.float32, copy=False)
+    a_batch = np.array(
+        [episode_actions[ep_idx][t] for ep_idx, t in anchor_pairs], dtype=np.int64
     )
+    s_pos_batch = np.stack(
+        [episode_states[ep_idx][t + k] for ep_idx, t in anchor_pairs], axis=0
+    ).astype(np.float32, copy=False)
 
-    buffer = ReplayBuffer(capacity=TRAIN_REPLAY_CAPACITY, seed=seed)
-    for trans in trajectory:
-        buffer.add(processed_transition(trans))
+    s_neg_batch = np.empty((batch_size, state_dim), dtype=np.float32)
+    for i in range(batch_size):
+        neg_item = buffer.sample(1)[0]
+        s_neg_batch[i] = np.asarray(neg_item["state"], dtype=np.float32)
 
-    T = len(trajectory)
-    k = DEFAULT_K
-    if T < k + 1:
-        raise RuntimeError(
-            f"Need trajectory length >= k+1={k+1}, got T={T}. "
-            f"Increase TRAIN_MAX_EPISODE_STEPS in configs/training_defaults.py or change TRAIN_SEED / TRAIN_ENV_ID."
-        )
-
-    state_dim = int(extract_state(trajectory[0]["obs"]).shape[0])
-    return trajectory, buffer, state_dim, n_actions, T, k, rng
+    return {
+        "s": s_batch,
+        "a": a_batch,
+        "s_pos": s_pos_batch,
+        "s_neg": s_neg_batch,
+    }
 
 
 def _select_torch_device():
@@ -154,15 +170,38 @@ def _summarize_run(
     }
 
 
+def _result_row(r: dict[str, Any]) -> dict[str, Any]:
+    return {field: r.get(field) for field in RESULT_FIELDS}
+
+
+def _default_results_path(*, seed: int, env_id: str, backend: str) -> Path:
+    env_tag = env_id.replace("/", "_").replace("\\", "_").replace(":", "").replace("-", "_")
+    return ROOT / "results" / f"softmax_baseline_seed{seed}_{env_tag}_{backend}.csv"
+
+
+def _write_result_csv(path: Path, row: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=RESULT_FIELDS)
+        writer.writeheader()
+        writer.writerow(row)
+
+
 def train_torch(
     *,
     seed: int | None = None,
     env_id: str | None = None,
+    num_episodes: int | None = None,
+    num_steps: int | None = None,
+    collector_mode: str = TRAIN_COLLECTOR_MODE,
+    oracle_epsilon: float = TRAIN_ORACLE_EPSILON,
     verbose: bool = True,
     save_checkpoint: bool = True,
 ) -> dict[str, Any]:
     seed = TRAIN_SEED if seed is None else seed
     env_id = TRAIN_ENV_ID if env_id is None else env_id
+    num_episodes = TRAIN_NUM_EPISODES if num_episodes is None else num_episodes
+    num_steps = TRAIN_NUM_STEPS if num_steps is None else num_steps
 
     torch.manual_seed(seed)
     device = _select_torch_device()
@@ -171,9 +210,28 @@ def train_torch(
     if verbose:
         print(f"Using backend: PyTorch  device={device}")
 
-    trajectory, buffer, state_dim, n_actions, T, k, rng = collect_episode(seed, env_id)
+    (
+        trajectories,
+        episode_states,
+        episode_actions,
+        valid_anchors,
+        buffer,
+        state_dim,
+        n_actions,
+        total_steps,
+        k,
+        rng,
+    ) = collect_episodes(
+        seed=seed,
+        env_id=env_id,
+        num_episodes=num_episodes,
+        positive_window=0,
+        collector_mode=collector_mode,
+        oracle_epsilon=oracle_epsilon,
+        max_episode_steps=TRAIN_MAX_EPISODE_STEPS,
+    )
 
-    batch_size = min(32, T - k)
+    batch_size = min(32, len(valid_anchors))
     cfg = build_train_config(
         backend="torch",
         device=str(device),
@@ -182,7 +240,13 @@ def train_torch(
         lr=TRAIN_TORCH_LR,
         seed=seed,
         env_id=env_id,
+        num_episodes=num_episodes,
     )
+    cfg["collector_mode"] = collector_mode
+    cfg["oracle_epsilon"] = oracle_epsilon if collector_mode == "oracle_eps" else None
+    cfg["num_train_steps"] = num_steps
+    cfg["method"] = "softmax_baseline"
+    cfg["loss_family"] = "softmax_ce"
     if verbose:
         _print_config_header(format_train_config_lines(cfg))
 
@@ -201,10 +265,13 @@ def train_torch(
     margins: list[float] = []
 
     model.train()
-    for step in range(1, TRAIN_NUM_STEPS + 1):
-        batch = build_contrastive_batch(
-            trajectory,
-            buffer,
+    for step in range(1, num_steps + 1):
+        batch = _build_multi_episode_batch(
+            episode_states=episode_states,
+            episode_actions=episode_actions,
+            valid_anchors=valid_anchors,
+            buffer=buffer,
+            state_dim=state_dim,
             k=k,
             batch_size=batch_size,
             rng=rng,
@@ -244,7 +311,7 @@ def train_torch(
 
     out = _summarize_run(
         cfg=cfg,
-        trajectory_length=T,
+        trajectory_length=total_steps,
         losses=losses,
         pos_logits=pos_logits,
         neg_logits=neg_logits,
@@ -253,7 +320,13 @@ def train_torch(
     )
 
     if save_checkpoint:
-        ckpt_path = ROOT / "checkpoints" / "contrastive_baseline.pt"
+        env_tag = env_id.replace("/", "_").replace("\\", "_").replace(":", "").replace("-", "_")
+        collector_tag = collector_mode.replace("-", "_")
+        ckpt_path = (
+            ROOT
+            / "checkpoints"
+            / f"softmax_baseline_seed{seed}_{env_tag}_{collector_tag}.pt"
+        )
         ckpt_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(
             {
@@ -262,11 +335,14 @@ def train_torch(
                 "n_actions": n_actions,
                 "train_device": str(device),
                 "backend": "torch",
+                "method": "softmax_baseline",
+                "loss_family": "softmax_ce",
                 "train_config": cfg,
                 "train_config_json": json.dumps(cfg, default=str),
             },
             ckpt_path,
         )
+        out["checkpoint_path"] = str(ckpt_path)
         if verbose:
             print()
             print("[Checkpoint] saved:", ckpt_path)
@@ -279,11 +355,17 @@ def train_numpy(
     *,
     seed: int | None = None,
     env_id: str | None = None,
+    num_episodes: int | None = None,
+    num_steps: int | None = None,
+    collector_mode: str = TRAIN_COLLECTOR_MODE,
+    oracle_epsilon: float = TRAIN_ORACLE_EPSILON,
     verbose: bool = True,
     save_checkpoint: bool = True,
 ) -> dict[str, Any]:
     seed = TRAIN_SEED if seed is None else seed
     env_id = TRAIN_ENV_ID if env_id is None else env_id
+    num_episodes = TRAIN_NUM_EPISODES if num_episodes is None else num_episodes
+    num_steps = TRAIN_NUM_STEPS if num_steps is None else num_steps
 
     if verbose:
         print(
@@ -291,9 +373,28 @@ def train_numpy(
             "(e.g. torch_cuda.dll / WinError 127). Training still runs without fixing PyTorch."
         )
 
-    trajectory, buffer, state_dim, n_actions, T, k, rng = collect_episode(seed, env_id)
+    (
+        trajectories,
+        episode_states,
+        episode_actions,
+        valid_anchors,
+        buffer,
+        state_dim,
+        n_actions,
+        total_steps,
+        k,
+        rng,
+    ) = collect_episodes(
+        seed=seed,
+        env_id=env_id,
+        num_episodes=num_episodes,
+        positive_window=0,
+        collector_mode=collector_mode,
+        oracle_epsilon=oracle_epsilon,
+        max_episode_steps=TRAIN_MAX_EPISODE_STEPS,
+    )
 
-    batch_size = min(32, T - k)
+    batch_size = min(32, len(valid_anchors))
     cfg = build_train_config(
         backend="numpy",
         device="cpu",
@@ -302,7 +403,13 @@ def train_numpy(
         lr=TRAIN_NUMPY_LR,
         seed=seed,
         env_id=env_id,
+        num_episodes=num_episodes,
     )
+    cfg["collector_mode"] = collector_mode
+    cfg["oracle_epsilon"] = oracle_epsilon if collector_mode == "oracle_eps" else None
+    cfg["num_train_steps"] = num_steps
+    cfg["method"] = "softmax_baseline"
+    cfg["loss_family"] = "softmax_ce"
     if verbose:
         _print_config_header(format_train_config_lines(cfg))
 
@@ -320,10 +427,13 @@ def train_numpy(
     neg_logits: list[float] = []
     margins: list[float] = []
 
-    for step in range(1, TRAIN_NUM_STEPS + 1):
-        batch = build_contrastive_batch(
-            trajectory,
-            buffer,
+    for step in range(1, num_steps + 1):
+        batch = _build_multi_episode_batch(
+            episode_states=episode_states,
+            episode_actions=episode_actions,
+            valid_anchors=valid_anchors,
+            buffer=buffer,
+            state_dim=state_dim,
             k=k,
             batch_size=batch_size,
             rng=rng,
@@ -364,7 +474,7 @@ def train_numpy(
 
     out = _summarize_run(
         cfg=cfg,
-        trajectory_length=T,
+        trajectory_length=total_steps,
         losses=losses,
         pos_logits=pos_logits,
         neg_logits=neg_logits,
@@ -373,7 +483,13 @@ def train_numpy(
     )
 
     if save_checkpoint:
-        ckpt_path = ROOT / "checkpoints" / "contrastive_baseline.npz"
+        env_tag = env_id.replace("/", "_").replace("\\", "_").replace(":", "").replace("-", "_")
+        collector_tag = collector_mode.replace("-", "_")
+        ckpt_path = (
+            ROOT
+            / "checkpoints"
+            / f"softmax_baseline_seed{seed}_{env_tag}_{collector_tag}.npz"
+        )
         ckpt_path.parent.mkdir(parents=True, exist_ok=True)
         sd = model.state_dict()
         np.savez(
@@ -385,8 +501,11 @@ def train_numpy(
             state_dim=sd["state_dim"],
             n_actions=sd["n_actions"],
             tau=sd["tau"],
+            method=np.array("softmax_baseline"),
+            loss_family=np.array("softmax_ce"),
             train_config_json=np.array(json.dumps(cfg, default=str)),
         )
+        out["checkpoint_path"] = str(ckpt_path)
         if verbose:
             print()
             print("[Checkpoint] saved:", ckpt_path)
@@ -396,10 +515,71 @@ def train_numpy(
 
 
 def main() -> None:
-    if _TORCH_AVAILABLE:
-        train_torch()
-    else:
-        train_numpy()
+    p = argparse.ArgumentParser(description="Train the softmax contrastive baseline.")
+    p.add_argument("--seed", type=int, default=TRAIN_SEED)
+    p.add_argument("--env-id", type=str, default=TRAIN_ENV_ID)
+    p.add_argument("--num-episodes", type=int, default=TRAIN_NUM_EPISODES)
+    p.add_argument("--num-steps", type=int, default=TRAIN_NUM_STEPS)
+    p.add_argument(
+        "--collector-mode",
+        type=str,
+        default=TRAIN_COLLECTOR_MODE,
+        choices=["random", "oracle_eps"],
+    )
+    p.add_argument("--oracle-epsilon", type=float, default=TRAIN_ORACLE_EPSILON)
+    p.add_argument(
+        "--backend",
+        type=str,
+        default="auto",
+        choices=["auto", "torch", "numpy"],
+        help="Choose backend explicitly or auto-select",
+    )
+    p.add_argument(
+        "--no-save-checkpoint",
+        action="store_true",
+        help="Skip writing a checkpoint file",
+    )
+    p.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        default=None,
+        help="Optional CSV path for saving the single-run result summary",
+    )
+    p.add_argument(
+        "--stdout-only",
+        action="store_true",
+        help="Print summary CSV to stdout only; do not write a result file",
+    )
+    p.add_argument("--quiet", action="store_true", help="Disable per-step printing")
+    args = p.parse_args()
+
+    use_torch = _TORCH_AVAILABLE if args.backend == "auto" else args.backend == "torch"
+    if use_torch and not _TORCH_AVAILABLE:
+        raise RuntimeError("Torch backend requested but torch import is unavailable.")
+
+    train = train_torch if use_torch else train_numpy
+    result = train(
+        seed=args.seed,
+        env_id=args.env_id,
+        num_episodes=args.num_episodes,
+        num_steps=args.num_steps,
+        collector_mode=args.collector_mode,
+        oracle_epsilon=args.oracle_epsilon,
+        verbose=not args.quiet,
+        save_checkpoint=not args.no_save_checkpoint,
+    )
+    row = _result_row(result)
+    output_path = args.output or _default_results_path(
+        seed=args.seed,
+        env_id=args.env_id,
+        backend=result["backend"],
+    )
+    if not args.stdout_only:
+        _write_result_csv(output_path, row)
+    writer = csv.DictWriter(sys.stdout, fieldnames=RESULT_FIELDS, lineterminator="\n")
+    writer.writeheader()
+    writer.writerow(row)
 
 
 if __name__ == "__main__":

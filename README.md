@@ -73,6 +73,7 @@ Writes `results/hidden_fork_seed_sweep.csv` and prints the same CSV to stdout. U
 - **Reproducibility:** seeds now fix `env.reset`, `action_space.sample()`, replay-buffer sampling, and NumPy model init.
 - **Collector:** default `collector_mode="oracle_eps"` uses a privileged demonstrator that may read `env.unwrapped.hidden_u` / pose for action selection, but replay items still store only partial-observation states from `obs`.
 - **Configuration:** change `ROBUST_V1_NUM_EPISODES`, `ROBUST_V1_W`, `ROBUST_V1_SWEEP_WEIGHTS`, `ROBUST_V1_P`, `ROBUST_V1_M`, `ROBUST_V1_LOGIT_SCALE`, `ROBUST_V1_COLLECTOR_MODE`, `ROBUST_V1_ORACLE_EPSILON` in `configs/training_defaults.py`.
+- **Extra diagnostics:** `experiments/probe_hidden_u_robust_v1.py` runs a pre-divergence linear probe for hidden `U` using both `action-only` and learned `h(s,a)` features; `experiments/heatmap_hidden_fork_actions_robust_v1.py` exports per-action scores from the same pre-divergence anchor toward `U=0` / `U=1` futures, and also writes a PNG heatmap if `matplotlib` is available.
 
 ```bash
 python experiments/train_contrastive_robust_v1.py
@@ -92,6 +93,11 @@ python experiments/run_hidden_fork_seed_sweep_robust_v1.py --weights 0.5 0.7 0.9
 ```
 
 The current default sweep in config is fixed at `w=0.9`; use `--weights ...` only when you explicitly want a new ablation.
+
+```bash
+python experiments/probe_hidden_u_robust_v1.py
+python experiments/heatmap_hidden_fork_actions_robust_v1.py
+```
 
 - If PyTorch loads: uses **PyTorch**; device is **`cuda`** when available and a tiny CUDA alloc succeeds, else **`cpu`**. Checkpoint: **`checkpoints/contrastive_baseline.pt`**.
 - If `import torch` **raises** (e.g. `torch_cuda.dll` / WinError 127): automatically uses **NumPy** backend (CPU). Checkpoint: **`checkpoints/contrastive_baseline.npz`**.

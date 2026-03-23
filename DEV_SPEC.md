@@ -457,6 +457,19 @@ python experiments/run_pipeline.py --env <confounded_env_id>
   - `ROBUST_V1_COLLECTOR_MODE`
   - `ROBUST_V1_ORACLE_EPSILON`
 - `experiments/run_hidden_fork_seed_sweep_robust_v1.py` — sweep seeds / regimes / weights and write CSV.
+- `experiments/probe_hidden_u_robust_v1.py` — train one or more robust-v1 models, then run a **pre-divergence** linear probe for hidden `U` on paired `fixed_u=0/1` rollouts using both `action-only` and embedding `h(s,a)` features.
+- `experiments/heatmap_hidden_fork_actions_robust_v1.py` — train one or more robust-v1 models, then export an action-score matrix from the last equal-observation anchor toward `U=0` / `U=1` futures; optionally writes a PNG if `matplotlib` is installed.
+
+**Interpretation contract (STRICT):**
+
+- Treat the current robust family as a **BCE / log-sigmoid** family, not as the original Phase 6 softmax-contrastive loss.
+- `robust_v1` with `w=1.0` means **no-pessimism control inside the robust-v1 family**; it is **not automatically identical** to the original Phase 6 baseline.
+- Until a same-data softmax baseline is implemented, do **not** label `robust_v1, w=1.0` as “the baseline” in tables or docs without an explicit qualifier.
+- If both are present, name methods explicitly, e.g.:
+  - `softmax_baseline`
+  - `robust_v1_w1.0`
+  - `robust_v1_w0.7`
+  - `robust_v1_w0.5`
 
 **Data-generation contract (STRICT):**
 
@@ -465,6 +478,124 @@ python experiments/run_pipeline.py --env <confounded_env_id>
 - Positive windows (`t+k .. t+k+P`) must stay **within the same episode** as the anchor.
 - Multi-episode datasets are preferred over single-episode training for Phase 8 comparisons.
 - For BCE / log-sigmoid variants, a documented **logit scale** may be applied before the sigmoid; if changed, record it in config/logs/CSV.
+
+**Fair-comparison contract (STRICT):**
+
+- Any claim of “robust vs baseline” under confounding must hold the **offline dataset recipe** fixed unless the comparison is explicitly labeled as a data+method change.
+- For fair comparison runs, align at minimum:
+  - `env_id`
+  - `seed` list
+  - `num_episodes`
+  - `collector_mode`
+  - `oracle_epsilon`
+  - `num_train_steps`
+  - replay/buffer seed behavior
+- The preferred comparison order is:
+  1. same-data `softmax_baseline` vs `robust_v1_w1.0` vs `robust_v1_w<1`
+  2. then auxiliary ablations on weights (`w=0.5`, `0.7`, `1.0`; optional `0.9`)
+- If a comparison is **not** fair yet (e.g. old random-policy baseline vs oracle multi-episode robust), the result must be labeled as **preliminary / non-fair** in both stdout summary and docs.
+
+**Dataset contract (STRICT, INVALID if violated):**
+
+- For any baseline-vs-robust comparison, the offline dataset MUST be generated once and then reused across methods.
+- Dataset generation parameters MUST be identical across compared methods, including at minimum:
+  - collector policy / `collector_mode`
+  - `num_episodes`
+  - seed list
+  - exploration parameter such as `oracle_epsilon`
+  - replay/buffer sampling seed behavior
+- It is FORBIDDEN to regenerate a separate offline dataset per method unless the run is explicitly labeled **non-fair** or **data+method ablation**.
+- If one method is trained on a different offline dataset recipe from another and the run is presented as a fair comparison, the experiment is **INVALID**.
+
+**Checkpoint contract (STRICT):**
+
+- All Phase 8 training entrypoints used for downstream evaluation must save a checkpoint by default, unless the caller explicitly disables saving for a sweep or smoke run.
+- A checkpoint must store enough information to run evaluation **without retraining**:
+  - model weights
+  - `state_dim`
+  - `n_actions`
+  - backend / device family
+  - `train_config` or `train_config_json`
+  - method identifier (`softmax_baseline` vs `robust_v1`)
+  - weight `w` when applicable
+- Sweep scripts may disable checkpoint saving to avoid overwriting, but evaluation scripts must consume saved checkpoints rather than retraining silently.
+
+**Evaluation protocol (STRICT, current priority):**
+
+- The primary Phase 8 downstream test is **forced-regime policy evaluation** in `HiddenRegimeForkEnv` using:
+  - `fixed_u=0`
+  - `fixed_u=1`
+- This evaluation is the main evidence for claims about **stronger / safer policy behavior**; training-set logits alone are insufficient.
+- For each evaluated checkpoint, run the same policy extraction rule in both regimes and report:
+  - `success_u0`
+  - `success_u1`
+  - `mean_success`
+  - `worst_case_success = min(success_u0, success_u1)`
+  - `regime_gap = abs(success_u0 - success_u1)`
+- If per-episode reward is meaningful, also report:
+  - `return_u0`
+  - `return_u1`
+  - `mean_return`
+  - `worst_case_return`
+- The minimum recommended weight set for robust-v1 forced-regime evaluation is:
+  - `w=1.0`
+  - `w=0.7`
+  - `w=0.5`
+  - optional `w=0.9`
+- A Phase 8 report that claims improved safety should prioritize:
+  1. `worst_case_success`
+  2. `regime_gap`
+  3. `mean_success`
+
+**Policy-extraction contract (STRICT):**
+
+- Any Phase 8 evaluation script that derives a control policy from the critic must document the exact scoring rule used to rank actions.
+- Until a stronger theory-backed evaluator is added, it is acceptable to use a **heuristic goal-scoring greedy policy** based on critic scores; however, this must **not** be described as a proven optimal `Q` policy unless such an equivalence is explicitly established.
+- The scoring rule, action subset, and goal/goal-bank construction must be written to CSV metadata or config output.
+- If only a subset of actions is evaluated (e.g. `left/right/forward`), this restriction must be explicit in logs/docs.
+- A single policy-extraction function MUST be implemented once and reused across all methods in the same comparison.
+- Changing the policy-extraction rule between methods is FORBIDDEN unless the run is explicitly labeled as a policy-extraction ablation.
+- If two methods are compared under different action-scoring rules without explicit ablation labeling, the comparison is **INVALID**.
+
+**Evaluation integrity contract (STRICT, INVALID if violated):**
+
+- The same evaluation script MUST be used for all methods in a comparison.
+- Evaluation scripts MUST NOT contain method-specific branches that change rollout logic, action ranking, stopping rules, or metric computation.
+- Metrics computation MUST be identical across runs for all compared methods.
+- Any method-specific preprocessing that affects only evaluation must be made explicit and treated as a separate ablation, not folded into the main comparison.
+- If robust and baseline results are produced with different evaluation logic and reported as a single fair comparison, the evaluation is **INVALID**.
+
+**Claim-to-metric mapping (REQUIRED for docs / reports):**
+
+- Claim A — baseline is misled by confounding:
+  - compare `softmax_baseline` (or clearly labeled interim control) on clean vs confounded settings
+  - inspect degradation, regime sensitivity, or widened forced-regime gap
+- Claim B — robust objective reduces misleading signal dependence:
+  - use surrogate diagnostics
+  - use pre-divergence probe
+  - use pre-fork action heatmap
+- Claim C — this reduction improves decisions:
+  - use forced-regime success / return metrics
+  - emphasize `worst_case_success` and `regime_gap`
+
+**Required result tables / CSV fields (Phase 8 evaluation):**
+
+- Every Phase 8 evaluation CSV should include at least:
+  - `method`
+  - `loss_family`
+  - `seed`
+  - `env_id`
+  - `eval_env_id`
+  - `collector_mode`
+  - `num_episodes`
+  - `num_train_steps`
+  - `w` (if applicable)
+  - `success_u0`
+  - `success_u1`
+  - `mean_success`
+  - `worst_case_success`
+  - `regime_gap`
+- If probe / heatmap / policy evaluation are produced from checkpoints, also log the checkpoint path or checkpoint id.
 
 **Required logging (Phase 8 robust v1):**
 
@@ -479,12 +610,38 @@ python experiments/run_pipeline.py --env <confounded_env_id>
 [Diag] mean_neg_surr_minus_obs_logit = <float>
 ```
 
+**Required logging (Phase 8 evaluation):**
+
+```text
+[EvalConfig] method = <string>
+[EvalConfig] loss_family = <string>
+[EvalConfig] checkpoint = <path>
+[EvalConfig] eval_env_id = <string>
+[EvalConfig] action_subset = <string>
+[Eval] success_u0 = <float>
+[Eval] success_u1 = <float>
+[Eval] mean_success = <float>
+[Eval] worst_case_success = <float>
+[Eval] regime_gap = <float>
+```
+
 **Verification commands:**
 
 ```bash
 python experiments/train_contrastive_robust_v1.py
 python experiments/run_hidden_fork_seed_sweep_robust_v1.py
+python experiments/probe_hidden_u_robust_v1.py
+python experiments/heatmap_hidden_fork_actions_robust_v1.py
 ```
+
+**Planned execution order (MANDATORY unless explicitly waived):**
+
+1. Update / enforce `DEV_SPEC.md` first.
+2. Align baseline training settings with Phase 8 data-generation settings and save checkpoints.
+3. Save robust checkpoints for the target weight set.
+4. Run forced-regime evaluation (`fixed_u=0`, `fixed_u=1`) and produce the main summary table.
+5. Run probe and heatmap as explanatory diagnostics.
+6. Update `README.md` only after the evaluation protocol and outputs exist.
 
 ---
 
