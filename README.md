@@ -52,7 +52,7 @@ python experiments/smoke_contrastive.py
 
 - **Torch:** `agents/contrastive_critic.py` — MLP on `concat(state, one_hot(action))`, L2-normalized embeddings, 2-way softmax contrastive loss.
 - **NumPy fallback:** `agents/contrastive_critic_numpy.py` — same objective; SGD; used when `import torch` fails (common on Windows with broken CUDA DLLs).
-- **Train:** `experiments/train_contrastive_baseline.py` — one episode → buffer → **50** steps with `build_contrastive_batch`, logs **`[Config] ...`** (full run settings: **seed**, **env_id**, inferred **has_hidden_confounder**, **k**, **lr**, etc.) before each `[Train]` block, then `[Train] step =` / `[Train] loss =`, plus **`[Train] mean_pos_logit`**, **`mean_neg_logit`**, **`mean_pos_minus_neg_logit`**. **Change `TRAIN_SEED` and `TRAIN_ENV_ID` only in `configs/training_defaults.py`** (exceptions: `run_pipeline.py`, `smoke_contrastive.py`, `run_random.py`).
+- **Train:** `experiments/train_contrastive_baseline.py` — one episode → buffer → **200** steps with `build_contrastive_batch`, logs **`[Config] ...`** (full run settings: **seed**, **env_id**, inferred **has_hidden_confounder**, **k**, **lr**, etc.) before each `[Train]` block, then `[Train] step =` / `[Train] loss =`, plus **`[Train] mean_pos_logit`**, **`mean_neg_logit`**, **`mean_pos_minus_neg_logit`**. **Change `TRAIN_SEED` and `TRAIN_ENV_ID` only in `configs/training_defaults.py`** (exceptions: `run_pipeline.py`, `smoke_contrastive.py`, `run_random.py`).
 
 ```bash
 python experiments/train_contrastive_baseline.py
@@ -65,6 +65,30 @@ python experiments/run_hidden_fork_seed_sweep.py
 ```
 
 Writes `results/hidden_fork_seed_sweep.csv` and prints the same CSV to stdout. Use `--stdout-only` to skip the file; `-o path.csv` to change the path.
+
+## Phase 8 — robust contrastive v1 (NumPy)
+
+- **Train:** `experiments/train_contrastive_robust_v1.py` — bidirectional robust objective with shared **`w=0.5`**, positive window **`P=2`** (`t+k .. t+k+2`), negative candidate pool **`M=16`**, and a **multi-episode** dataset (**default `num_episodes=5`**).
+- **Diagnostics:** prints usual `[Train]` metrics plus **`[Diag] frac_pos_logit_gt_neg_logit`**, **`[Diag] mean_pos_obs_minus_surr_logit`**, **`[Diag] mean_neg_surr_minus_obs_logit`**.
+- **Reproducibility:** seeds now fix `env.reset`, `action_space.sample()`, replay-buffer sampling, and NumPy model init.
+- **Configuration:** change `TRAIN_NUM_EPISODES`, `ROBUST_V1_W`, `ROBUST_V1_SWEEP_WEIGHTS`, `ROBUST_V1_P`, `ROBUST_V1_M` in `configs/training_defaults.py`.
+
+```bash
+python experiments/train_contrastive_robust_v1.py
+```
+
+**Batch comparison (robust v1, HiddenFork clean vs confounded, 5 seeds 0–4 → CSV):**
+
+```bash
+python experiments/run_hidden_fork_seed_sweep_robust_v1.py
+```
+
+Writes `results/hidden_fork_seed_sweep_robust_v1.csv` and prints the same CSV to stdout.
+To tune the shared robust weight, sweep multiple values in one run:
+
+```bash
+python experiments/run_hidden_fork_seed_sweep_robust_v1.py --weights 0.5 0.7 0.9
+```
 
 - If PyTorch loads: uses **PyTorch**; device is **`cuda`** when available and a tiny CUDA alloc succeeds, else **`cpu`**. Checkpoint: **`checkpoints/contrastive_baseline.pt`**.
 - If `import torch` **raises** (e.g. `torch_cuda.dll` / WinError 127): automatically uses **NumPy** backend (CPU). Checkpoint: **`checkpoints/contrastive_baseline.npz`**.

@@ -17,11 +17,12 @@ TRAIN_SEED = 0
 # --- Environment ---
 # Examples:
 # TRAIN_ENV_ID = "MiniGrid-Empty-5x5-v0"
-TRAIN_ENV_ID = "CausalContrastive-HiddenFork-15x15-Clean-v0"
+# TRAIN_ENV_ID = "CausalContrastive-HiddenFork-15x15-Clean-v0"
 # TRAIN_ENV_ID = "CausalContrastive-HiddenFork-15x15-v0"
-# TRAIN_ENV_ID = "MiniGrid-Empty-5x5-v0"
+TRAIN_ENV_ID = "MiniGrid-Empty-5x5-v0"
 
 TRAIN_MAX_EPISODE_STEPS = 500
+TRAIN_NUM_EPISODES = 5
 TRAIN_NUM_STEPS = 200
 TRAIN_HIDDEN = 128
 TRAIN_EMB_DIM = 64
@@ -29,6 +30,12 @@ TRAIN_TAU = 0.07
 TRAIN_TORCH_LR = 1e-3
 TRAIN_NUMPY_LR = 1e-2
 TRAIN_REPLAY_CAPACITY = 10000
+
+# --- Phase 8 robust-v1 defaults ---
+ROBUST_V1_P = 2
+ROBUST_V1_M = 16
+ROBUST_V1_W = 0.9
+ROBUST_V1_SWEEP_WEIGHTS = (0.5, 0.7, 0.9)
 
 
 def infer_hidden_confounder(env_id: str) -> bool | None:
@@ -54,6 +61,7 @@ def build_train_config(
     lr: float | None = None,
     seed: int | None = None,
     env_id: str | None = None,
+    num_episodes: int | None = None,
 ) -> dict[str, Any]:
     """Flat dict for logging and checkpointing."""
     from utils.contrastive_sampling import DEFAULT_K
@@ -61,6 +69,7 @@ def build_train_config(
     k_val = DEFAULT_K if k is None else k
     seed_val = TRAIN_SEED if seed is None else seed
     env_val = TRAIN_ENV_ID if env_id is None else env_id
+    num_episodes_val = TRAIN_NUM_EPISODES if num_episodes is None else num_episodes
     conf = infer_hidden_confounder(env_val)
     if lr is None:
         lr = TRAIN_NUMPY_LR if backend == "numpy" else TRAIN_TORCH_LR
@@ -71,6 +80,7 @@ def build_train_config(
         "has_hidden_confounder_note": _confounder_note(conf, env_val),
         "contrastive_k": k_val,
         "max_episode_steps": TRAIN_MAX_EPISODE_STEPS,
+        "num_episodes": num_episodes_val,
         "num_train_steps": TRAIN_NUM_STEPS,
         "hidden": TRAIN_HIDDEN,
         "emb_dim": TRAIN_EMB_DIM,
@@ -107,6 +117,7 @@ def format_train_config_lines(cfg: dict[str, Any]) -> list[str]:
         "has_hidden_confounder_note",
         "contrastive_k",
         "max_episode_steps",
+        "num_episodes",
         "num_train_steps",
         "batch_size",
         "hidden",

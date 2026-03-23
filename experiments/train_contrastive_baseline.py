@@ -82,13 +82,14 @@ def collect_episode(seed: int, env_id: str):
     """Roll out one episode, fill replay buffer; return trajectory + dims."""
     rng = np.random.default_rng(seed)
     env = gym.make(env_id, render_mode="rgb_array")
+    env.action_space.seed(seed)
     n_actions = int(env.action_space.n)
     policy = build_random_policy(env)
     trajectory = rollout_episode(
         env, policy, max_steps=TRAIN_MAX_EPISODE_STEPS, seed=seed
     )
 
-    buffer = ReplayBuffer(capacity=TRAIN_REPLAY_CAPACITY)
+    buffer = ReplayBuffer(capacity=TRAIN_REPLAY_CAPACITY, seed=seed)
     for trans in trajectory:
         buffer.add(processed_transition(trans))
 

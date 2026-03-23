@@ -36,7 +36,7 @@ except OSError:
 
 ENV_CLEAN = "CausalContrastive-HiddenFork-15x15-Clean-v0"
 ENV_CONF = "CausalContrastive-HiddenFork-15x15-v0"
-SEEDS = (0, 1, 2,3,4,5)
+SEEDS = (0, 1, 2, 3, 4)
 
 # Flat CSV columns (no nested train_config)
 CSV_FIELDS = [
