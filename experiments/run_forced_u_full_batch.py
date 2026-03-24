@@ -29,7 +29,6 @@ from configs.training_defaults import (  # noqa: E402
     ROBUST_V1_NUM_EPISODES,
     ROBUST_V1_ORACLE_EPSILON,
     ROBUST_V1_P,
-    ROBUST_V1_SWEEP_WEIGHTS,
     TRAIN_NUMPY_LR,
     TRAIN_NUM_STEPS,
 )
@@ -42,7 +41,8 @@ from experiments.evaluate_hidden_fork_forced_u import (  # noqa: E402
 from experiments.train_contrastive_baseline import train_numpy  # noqa: E402
 from experiments.train_contrastive_robust_v1 import train_numpy_robust_v1  # noqa: E402
 
-SEEDS = (0, 1, 2, 3, 4)
+DEFAULT_BATCH_SEEDS = (0, 1)
+DEFAULT_BATCH_WEIGHTS = (0.5, 0.8, 1.0)
 
 BASELINE_TRAIN_FIELDS = [
     "method",
@@ -201,6 +201,8 @@ def _summarize_main_table(eval_rows: list[dict[str, object]]) -> list[dict[str, 
 
 def run_pipeline(
     *,
+    seeds: tuple[int, ...],
+    weights: tuple[float, ...],
     baseline_output: Path,
     robust_output: Path,
     eval_output: Path,
@@ -223,8 +225,8 @@ def run_pipeline(
 
     checkpoint_paths: list[Path] = []
 
-    print("[Batch] training baseline (5 seeds, confounded only)...", flush=True)
-    for seed in SEEDS:
+    print(f"[Batch] training baseline ({len(seeds)} seeds, confounded only)...", flush=True)
+    for seed in seeds:
         print(f"[Batch] baseline seed={seed}", flush=True)
         result = train_numpy(
             seed=seed,
@@ -240,9 +242,12 @@ def run_pipeline(
         checkpoint_paths.append(Path(str(result["checkpoint_path"])))
         _write_csv(baseline_rows, baseline_output, BASELINE_TRAIN_FIELDS)
 
-    print("[Batch] training robust_v1 (5 seeds x weights, confounded only)...", flush=True)
-    for w in ROBUST_V1_SWEEP_WEIGHTS:
-        for seed in SEEDS:
+    print(
+        f"[Batch] training robust_v1 ({len(seeds)} seeds x {len(weights)} weights, confounded only)...",
+        flush=True,
+    )
+    for w in weights:
+        for seed in seeds:
             print(f"[Batch] robust_v1 w={w:.2f} seed={seed}", flush=True)
             result = train_numpy_robust_v1(
                 seed=seed,
@@ -300,26 +305,42 @@ def run_pipeline(
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Overnight confounded HiddenFork batch runner")
+    p = argparse.ArgumentParser(
+        description="Overnight confounded HiddenFork batch runner (default: weak-planner 2-seed ablation)"
+    )
+    p.add_argument(
+        "--seeds",
+        type=int,
+        nargs="+",
+        default=list(DEFAULT_BATCH_SEEDS),
+        help="Seed list for both baseline and robust runs (default: 0 1)",
+    )
+    p.add_argument(
+        "--weights",
+        type=float,
+        nargs="+",
+        default=list(DEFAULT_BATCH_WEIGHTS),
+        help="Robust_v1 weight list (default: 0.5 0.8 1.0)",
+    )
     p.add_argument(
         "--baseline-output",
         type=Path,
-        default=ROOT / "results" / "hidden_fork_confounded_baseline_5seed.csv",
+        default=ROOT / "results" / "hidden_fork_confounded_baseline_2seed.csv",
     )
     p.add_argument(
         "--robust-output",
         type=Path,
-        default=ROOT / "results" / "hidden_fork_confounded_robust_v1_w_sweep.csv",
+        default=ROOT / "results" / "hidden_fork_confounded_robust_v1_weak_planner_2seed.csv",
     )
     p.add_argument(
         "--eval-output",
         type=Path,
-        default=ROOT / "results" / "hidden_fork_forced_u_eval_confounded.csv",
+        default=ROOT / "results" / "hidden_fork_forced_u_eval_weak_planner_2seed.csv",
     )
     p.add_argument(
         "--main-table-output",
         type=Path,
-        default=ROOT / "results" / "hidden_fork_forced_u_main_table.csv",
+        default=ROOT / "results" / "hidden_fork_forced_u_main_table_weak_planner_2seed.csv",
     )
     p.add_argument("--episodes-per-regime", type=int, default=100)
     p.add_argument("--action-subset", type=str, default="left,right,forward")
@@ -333,13 +354,15 @@ def main() -> None:
     )
     p.add_argument("--plan-depth", type=int, default=2)
     p.add_argument("--max-eval-steps", type=int, default=60)
-    p.add_argument("--collision-penalty", type=float, default=3.0)
+    p.add_argument("--collision-penalty", type=float, default=0.0)
     p.add_argument("--turn-penalty", type=float, default=0.05)
     p.add_argument("--progress-bonus", type=float, default=0.75)
     p.add_argument("--success-bonus", type=float, default=5.0)
     args = p.parse_args()
 
     run_pipeline(
+        seeds=tuple(args.seeds),
+        weights=tuple(args.weights),
         baseline_output=args.baseline_output,
         robust_output=args.robust_output,
         eval_output=args.eval_output,
