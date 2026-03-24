@@ -107,12 +107,13 @@ For the current overnight comparison entrypoint, use:
 python experiments/run_forced_u_full_batch.py
 ```
 
-This script now defaults to the **weak-planner ablation** configuration:
+This script now defaults to the **merge-shared closed-book** configuration:
 
 - seeds: `0,1`
 - robust weights: `0.5, 0.8, 1.0`
+- `goal_mode=merge_shared`
 - planner: `plan_depth=2`
-- `collision_penalty=0.0`
+- `collision_penalty=3.0`
 - `turn_penalty=0.05`
 - `progress_bonus=0.75`
 - `success_bonus=5.0`
@@ -120,12 +121,41 @@ This script now defaults to the **weak-planner ablation** configuration:
 It writes four CSV files incrementally while running:
 
 - `results/hidden_fork_confounded_baseline_2seed.csv`
-- `results/hidden_fork_confounded_robust_v1_weak_planner_2seed.csv`
-- `results/hidden_fork_forced_u_eval_weak_planner_2seed.csv`
-- `results/hidden_fork_forced_u_main_table_weak_planner_2seed.csv`
+- `results/hidden_fork_confounded_robust_v1_merge_shared_2seed.csv`
+- `results/hidden_fork_forced_u_eval_merge_shared_2seed.csv`
+- `results/hidden_fork_forced_u_main_table_merge_shared_2seed.csv`
 
-Use this batch when you want to test whether removing the hard collision penalty
-reveals differences between `softmax_baseline` and `robust_v1` at the fork.
+Use this batch for the current closed-book branch-choice check on the existing
+branch-wall HiddenFork map.
+
+### Planned next environment: visually symmetric hidden-trap fork
+
+The current `merge_shared` evaluator removes regime-specific future-goal leakage,
+but the map still has a simpler cue: one side is visibly blocked and the other is
+visibly open. That means a policy may still solve the fork by reading geometry,
+not by handling hidden confounding.
+
+The planned stricter next step is therefore a **visually symmetric hidden-trap**
+version of `HiddenFork`:
+
+- at the fork, **left** and **right** should both look like ordinary floor in the observation
+- the visible one-side wall cue should be removed
+- the branch hazard becomes latent:
+  - if `U=0`, right is the hidden failure branch
+  - if `U=1`, left is the hidden failure branch
+- stepping on the unsafe branch should terminate with failure
+- the oracle collector still knows `U` and should avoid the trap perfectly
+- evaluation should continue using the same **shared merge target** so the test remains closed-book
+
+Expected use:
+
+- current evaluator = **open-book / tracking** sanity check
+- weak-planner evaluator = **planner sensitivity** check
+- merge-goal evaluator on branch-wall map = **current closed-book branch-choice** check
+- symmetric hidden-trap map = **stricter causal robustness** check
+
+This redesign is planned and documented first before implementation so the next
+environment change can be interpreted cleanly.
 
 - If PyTorch loads: uses **PyTorch**; device is **`cuda`** when available and a tiny CUDA alloc succeeds, else **`cpu`**. Checkpoint: **`checkpoints/contrastive_baseline.pt`**.
 - If `import torch` **raises** (e.g. `torch_cuda.dll` / WinError 127): automatically uses **NumPy** backend (CPU). Checkpoint: **`checkpoints/contrastive_baseline.npz`**.

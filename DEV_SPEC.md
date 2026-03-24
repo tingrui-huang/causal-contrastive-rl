@@ -561,6 +561,78 @@ python experiments/run_pipeline.py --env <confounded_env_id>
   - interpret this batch as a **policy-extraction sensitivity / weak-planner**
     check, not as the final headline comparison.
 
+**Planned stricter environment + evaluator redesign (review before implementation):**
+
+- Motivation:
+  - the current forced-U evaluator leak was partly fixed by moving from branch-specific futures to a shared merge target, but the map still contains **visible geometry asymmetry**: one side is physically blocked and the other is open
+  - this means the branch-choice problem can still be solved by simple wall-avoidance once the agent reaches the fork, even if `U` itself is hidden
+  - for the intended minimal causal test, the fork decision should be visually ambiguous and only become correct/incorrect through the latent regime.
+
+- New research question:
+  - define a stricter **visually symmetric HiddenFork** where left/right fork observations are pixel-identical at decision time
+  - replace the visible blocked branch with a **latent hazard**: both sides look like ordinary floor, but one side is a regime-dependent failure transition
+  - ask the closed-book question more directly: "without seeing `U`, can a policy avoid the regime-dependent hidden trap better than baseline?"
+
+- Planned environment redesign:
+  - keep the same long trunk / fork / merge structure so the task remains comparable to the existing HiddenFork benchmark
+  - at the fork, render **both branch entry cells as ordinary floor**
+  - remove the visible one-side wall cue at the decision point
+  - define a regime-dependent hidden trap:
+    - if `U=0`, the **right** branch is unsafe
+    - if `U=1`, the **left** branch is unsafe
+  - stepping onto the unsafe branch should terminate the episode with failure (`done=True`, `reward=0`)
+  - safe branch behavior should remain the same as before: continue toward the merge corridor and then to the goal
+  - the clean version should still fix one regime deterministically, but must use the same visual layout as the confounded version.
+
+- Planned collector / oracle contract updates:
+  - the privileged demonstrator may still read `hidden_u`
+  - the oracle must be updated so it **always avoids the hidden trap** while still producing only ordinary partial observations in the replay data
+  - no replay item may contain a direct trap flag or `U` label inside the observation/state representation.
+
+- Planned evaluator variants (to keep concepts separate):
+  1. **Open-book evaluator**: regime-specific future reference; tracking sanity check only
+  2. **Weak-planner evaluator**: planner-sensitivity ablation only
+  3. **Closed-book merge-goal evaluator**: shared merge target on the current branch-wall map
+  4. **Symmetric hidden-trap evaluator** (next stricter target): same closed-book merge target, but on the visually symmetric hidden-trap map
+
+- Planned implementation checks (MANDATORY before claiming valid results):
+  - at the fork decision state, left/right candidate observations must be visually identical up to agent pose effects; there must be no branch-specific wall/lava tile visible in the observation
+  - `fixed_u=0` and `fixed_u=1` must differ only in the latent safety rule, not in visible fork geometry
+  - the merge target shown by the evaluator must still be identical for both regimes
+  - `progress_bonus` must not depend on regime-specific branch futures
+  - the same action subset, planner logic, and stopping rules must be reused for all compared methods
+  - all runs must log enough metadata to distinguish:
+    - map variant (`branch_wall` vs planned `hidden_trap`)
+    - goal mode (`open_book` vs `merge_shared`)
+    - any trap-specific evaluation setting if introduced.
+
+- Planned metrics for the stricter benchmark:
+  - keep existing:
+    - `success_u0`
+    - `success_u1`
+    - `mean_success`
+    - `worst_case_success`
+    - `regime_gap`
+  - keep fork-decision diagnostics:
+    - `fork_visit_rate_u0`
+    - `fork_action_prob_left_u0`
+    - `fork_action_prob_right_u0`
+    - `fork_action_prob_forward_u0`
+    - `fork_visit_rate_u1`
+    - `fork_action_prob_left_u1`
+    - `fork_action_prob_right_u1`
+    - `fork_action_prob_forward_u1`
+  - add trap-specific diagnostics when implemented:
+    - `trap_fail_rate_u0`
+    - `trap_fail_rate_u1`
+    - optional `safe_branch_rate_u0/u1`
+    - optional `merge_reach_rate_u0/u1`
+
+- Planned interpretation:
+  - if baseline was strong on the branch-wall map but degrades sharply on the symmetric hidden-trap map, that suggests it relied on visible geometry rather than truly robust branch choice
+  - if robust variants retain higher `worst_case_success`, lower `regime_gap`, or lower `trap_fail_rate` on the symmetric hidden-trap map, that is stronger evidence for reduced hidden-confounder dependence
+  - if all methods still saturate even after removing visual asymmetry, the environment should be treated as a very weak sanity check only and not as serious causal evidence.
+
 **Policy-extraction contract (STRICT):**
 
 - Any Phase 8 evaluation script that derives a control policy from the critic must document the exact scoring rule used to rank actions.
@@ -600,6 +672,7 @@ python experiments/run_pipeline.py --env <confounded_env_id>
   - `seed`
   - `env_id`
   - `eval_env_id`
+  - `goal_mode`
   - `collector_mode`
   - `num_episodes`
   - `num_train_steps`
@@ -619,6 +692,7 @@ python experiments/run_pipeline.py --env <confounded_env_id>
   - `fork_action_prob_right_u1`
   - `fork_action_prob_forward_u1`
 - If probe / heatmap / policy evaluation are produced from checkpoints, also log the checkpoint path or checkpoint id.
+- If multiple map designs are compared, also log the environment / map variant explicitly (for example current branch-wall map vs planned hidden-trap symmetric map).
 
 **Required logging (Phase 8 robust v1):**
 
@@ -665,6 +739,7 @@ python experiments/heatmap_hidden_fork_actions_robust_v1.py
 4. Run forced-regime evaluation (`fixed_u=0`, `fixed_u=1`) and produce the main summary table.
 5. Run probe and heatmap as explanatory diagnostics.
 6. Update `README.md` only after the evaluation protocol and outputs exist.
+7. If forced-U reaches ceiling, run the planned **weak-planner**, then **closed-book merge-goal**, and then the stricter **symmetric hidden-trap** ablation before making method-strength claims.
 
 ---
 

@@ -27,8 +27,8 @@ from configs.training_defaults import (
 )
 from experiments.train_contrastive_baseline import train_numpy
 
-ENV_CLEAN = "CausalContrastive-HiddenFork-15x15-Clean-v0"
-ENV_CONF = "CausalContrastive-HiddenFork-15x15-v0"
+ENV_CLEAN = "CausalContrastive-HiddenForkHiddenTrap-15x15-Clean-v0"
+ENV_CONF = "CausalContrastive-HiddenForkHiddenTrap-15x15-v0"
 SEEDS = (0, 1, 2, 3, 4)
 
 # Flat CSV columns (no nested train_config)
@@ -135,13 +135,13 @@ def _write_csv(rows: list[dict[str, object]], path: Path) -> None:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="HiddenFork baseline seed × regime sweep → CSV")
+    p = argparse.ArgumentParser(description="HiddenTrap HiddenFork baseline seed × regime sweep → CSV")
     p.add_argument(
         "-o",
         "--output",
         type=Path,
-        default=ROOT / "results" / "hidden_fork_seed_sweep.csv",
-        help="CSV path (default: results/hidden_fork_seed_sweep.csv)",
+        default=ROOT / "results" / "hidden_fork_hidden_trap_seed_sweep.csv",
+        help="CSV path (default: results/hidden_fork_hidden_trap_seed_sweep.csv)",
     )
     p.add_argument("--num-episodes", type=int, default=TRAIN_NUM_EPISODES)
     p.add_argument("--num-steps", type=int, default=TRAIN_NUM_STEPS)

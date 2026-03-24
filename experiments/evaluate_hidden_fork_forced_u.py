@@ -39,7 +39,7 @@ from utils.offline_data import build_policy
 from utils.contrastive_sampling import DEFAULT_K
 from utils.preprocess import extract_state
 
-ENV_CONF = "CausalContrastive-HiddenFork-15x15-v0"
+ENV_CONF = "CausalContrastive-HiddenForkHiddenTrap-15x15-v0"
 ACTION_NAME_TO_ID = {
     "left": 0,
     "right": 1,
@@ -58,6 +58,7 @@ CSV_FIELDS = [
     "num_episodes",
     "num_train_steps",
     "w",
+    "goal_mode",
     "action_subset",
     "goal_bank_size",
     "episodes_per_regime",
@@ -174,6 +175,47 @@ def _empty_fork_stats() -> dict[str, float]:
     }
 
 
+def _stack_states_by_positions(
+    ref_states: np.ndarray,
+    ref_positions: list[tuple[int, int]],
+    *,
+    predicate,
+) -> np.ndarray:
+    selected = [state for state, pos in zip(ref_states, ref_positions) if predicate(pos)]
+    if not selected:
+        raise RuntimeError("No reference states matched the requested shared-goal predicate.")
+    return np.stack(selected, axis=0).astype(np.float64, copy=False)
+
+
+def _shared_goal_banks(
+    *,
+    ref_states_u0: np.ndarray,
+    ref_positions_u0: list[tuple[int, int]],
+    ref_states_u1: np.ndarray,
+    ref_positions_u1: list[tuple[int, int]],
+    cx: int,
+    fork_row: int,
+) -> tuple[np.ndarray, np.ndarray, tuple[int, int]]:
+    decision_cell = (cx, fork_row + 1)
+    decision_bank = _stack_states_by_positions(
+        ref_states_u0,
+        ref_positions_u0,
+        predicate=lambda pos: pos == decision_cell,
+    )
+    merge_bank_u0 = _stack_states_by_positions(
+        ref_states_u0,
+        ref_positions_u0,
+        predicate=lambda pos: pos[0] == cx and pos[1] <= fork_row - 1,
+    )
+    merge_bank_u1 = _stack_states_by_positions(
+        ref_states_u1,
+        ref_positions_u1,
+        predicate=lambda pos: pos[0] == cx and pos[1] <= fork_row - 1,
+    )
+    merge_bank = np.concatenate([merge_bank_u0, merge_bank_u1], axis=0)
+    return decision_bank, merge_bank, decision_cell
+
+
 def _reference_index(
     *,
     step_idx: int,
@@ -198,9 +240,14 @@ def _run_regime(
     action_ids: list[int],
     ref_states: np.ndarray,
     ref_positions: list[tuple[int, int]],
+    decision_bank: np.ndarray | None,
+    merge_bank: np.ndarray | None,
+    decision_cell: tuple[int, int] | None,
+    fork_row: int,
     lookahead_k: int,
     future_window: int,
     alignment_mode: str,
+    goal_mode: str,
     plan_depth: int,
     max_eval_steps: int,
     collision_penalty: float,
@@ -228,12 +275,23 @@ def _run_regime(
                 ref_states=ref_states,
                 alignment_mode=alignment_mode,
             )
-            future_bank = _future_window_bank(
-                ref_states,
-                ref_idx=ref_idx,
-                lookahead_k=lookahead_k,
-                future_window=future_window,
-            )
+            pos = tuple(int(v) for v in raw.agent_pos)
+            if goal_mode == "open_book":
+                future_bank = _future_window_bank(
+                    ref_states,
+                    ref_idx=ref_idx,
+                    lookahead_k=lookahead_k,
+                    future_window=future_window,
+                )
+            elif goal_mode == "merge_shared":
+                if decision_bank is None or merge_bank is None or decision_cell is None:
+                    raise RuntimeError("merge_shared goal mode requires shared decision/merge banks.")
+                if pos[1] > fork_row + 1:
+                    future_bank = decision_bank
+                else:
+                    future_bank = merge_bank
+            else:
+                raise ValueError(f"Unknown goal_mode: {goal_mode!r}")
             scores = []
             best_sequences: list[tuple[int, ...]] = []
             for action_id in action_ids:
@@ -254,23 +312,37 @@ def _run_regime(
                             ref_states=ref_states,
                             alignment_mode=alignment_mode,
                         )
-                        sim_future_bank = _future_window_bank(
-                            ref_states,
-                            ref_idx=sim_ref_idx,
-                            lookahead_k=lookahead_k,
-                            future_window=future_window,
-                        )
+                        sim_fork_row = int(getattr(sim_raw_before, "_fork_row"))
+                        if goal_mode == "open_book":
+                            sim_future_bank = _future_window_bank(
+                                ref_states,
+                                ref_idx=sim_ref_idx,
+                                lookahead_k=lookahead_k,
+                                future_window=future_window,
+                            )
+                            sim_progress_target_pos: tuple[int, int] | None = ref_positions[
+                                min(sim_ref_idx + lookahead_k, len(ref_positions) - 1)
+                            ]
+                        elif goal_mode == "merge_shared":
+                            if decision_bank is None or merge_bank is None or decision_cell is None:
+                                raise RuntimeError("merge_shared goal mode requires shared decision/merge banks.")
+                            if pos_before[1] > sim_fork_row + 1:
+                                sim_future_bank = decision_bank
+                                sim_progress_target_pos = decision_cell
+                            else:
+                                sim_future_bank = merge_bank
+                                sim_progress_target_pos = None
+                        else:
+                            raise ValueError(f"Unknown goal_mode: {goal_mode!r}")
                         seq_value += _score_action(model, sim_state, seq_action, sim_future_bank)
                         sim_next_obs, _, sim_terminated, sim_truncated, _ = sim_env.step(seq_action)
                         sim_raw_after = sim_env.unwrapped
                         pos_after = tuple(int(v) for v in sim_raw_after.agent_pos)
-                        target_ref_pos = ref_positions[
-                            min(sim_ref_idx + lookahead_k, len(ref_positions) - 1)
-                        ]
-                        seq_value += progress_bonus * float(
-                            _manhattan(pos_before, target_ref_pos)
-                            - _manhattan(pos_after, target_ref_pos)
-                        )
+                        if sim_progress_target_pos is not None:
+                            seq_value += progress_bonus * float(
+                                _manhattan(pos_before, sim_progress_target_pos)
+                                - _manhattan(pos_after, sim_progress_target_pos)
+                            )
                         if seq_action == ACTION_NAME_TO_ID["forward"] and pos_after == pos_before:
                             seq_value -= collision_penalty
                         elif seq_action in (ACTION_NAME_TO_ID["left"], ACTION_NAME_TO_ID["right"]):
@@ -297,7 +369,6 @@ def _run_regime(
                 debug_step = getattr(_run_regime, "_debug_step", 0)
                 if debug_step < debug_max_steps:
                     direction = int(raw.agent_dir)
-                    fork_row = int(getattr(raw, "_fork_row", -1))
                     hidden_u = int(getattr(raw, "hidden_u", -1))
                     pre_fork = pos[1] > fork_row
                     at_fork = pos[1] == fork_row
@@ -305,7 +376,7 @@ def _run_regime(
                         f"[EvalDebug] fixed_u={fixed_u} ep={ep} step={step_idx} "
                         f"pos={pos} dir={direction} fork_row={fork_row} "
                         f"hidden_u={hidden_u} pre_fork={pre_fork} at_fork={at_fork} "
-                        f"ref_idx={ref_idx} align={alignment_mode} "
+                        f"ref_idx={ref_idx} align={alignment_mode} goal_mode={goal_mode} "
                         f"scores={scores} chosen={ACTION_ID_TO_NAME.get(action, action)} "
                         f"best_seq={[ACTION_ID_TO_NAME.get(a, a) for a in best_sequences[best_idx]]}"
                     )
@@ -349,6 +420,7 @@ def evaluate_checkpoint(
     lookahead_k: int,
     future_window: int,
     alignment_mode: str,
+    goal_mode: str,
     plan_depth: int,
     max_eval_steps: int,
     collision_penalty: float,
@@ -360,6 +432,11 @@ def evaluate_checkpoint(
 ) -> dict[str, object]:
     model, meta = _load_numpy_checkpoint(checkpoint_path)
     cfg = meta["train_config"]
+    geom_env = gym.make(eval_env_id, render_mode="rgb_array", fixed_u=0)
+    geom_env.reset(seed=0)
+    cx = int(geom_env.unwrapped.width // 2)
+    fork_row = int(geom_env.unwrapped._fork_row)
+    geom_env.close()
 
     ref_states_u0, ref_positions_u0 = _reference_trajectory_from_fixed_u(
         env_id=eval_env_id,
@@ -371,6 +448,18 @@ def evaluate_checkpoint(
         fixed_u=1,
         seed=0,
     )
+    decision_bank = None
+    merge_bank = None
+    decision_cell = None
+    if goal_mode == "merge_shared":
+        decision_bank, merge_bank, decision_cell = _shared_goal_banks(
+            ref_states_u0=ref_states_u0,
+            ref_positions_u0=ref_positions_u0,
+            ref_states_u1=ref_states_u1,
+            ref_positions_u1=ref_positions_u1,
+            cx=cx,
+            fork_row=fork_row,
+        )
 
     regime_u0 = _run_regime(
         model=model,
@@ -380,9 +469,14 @@ def evaluate_checkpoint(
         action_ids=action_ids,
         ref_states=ref_states_u0,
         ref_positions=ref_positions_u0,
+        decision_bank=decision_bank,
+        merge_bank=merge_bank,
+        decision_cell=decision_cell,
+        fork_row=fork_row,
         lookahead_k=lookahead_k,
         future_window=future_window,
         alignment_mode=alignment_mode,
+        goal_mode=goal_mode,
         plan_depth=plan_depth,
         max_eval_steps=max_eval_steps,
         collision_penalty=collision_penalty,
@@ -400,9 +494,14 @@ def evaluate_checkpoint(
         action_ids=action_ids,
         ref_states=ref_states_u1,
         ref_positions=ref_positions_u1,
+        decision_bank=decision_bank,
+        merge_bank=merge_bank,
+        decision_cell=decision_cell,
+        fork_row=fork_row,
         lookahead_k=lookahead_k,
         future_window=future_window,
         alignment_mode=alignment_mode,
+        goal_mode=goal_mode,
         plan_depth=plan_depth,
         max_eval_steps=max_eval_steps,
         collision_penalty=collision_penalty,
@@ -429,8 +528,9 @@ def evaluate_checkpoint(
         "num_episodes": cfg.get("num_episodes"),
         "num_train_steps": cfg.get("num_train_steps"),
         "w": meta["w"],
+        "goal_mode": goal_mode,
         "action_subset": action_subset_label,
-        "goal_bank_size": future_window + 1,
+        "goal_bank_size": (future_window + 1) if goal_mode == "open_book" else int(merge_bank.shape[0]),
         "episodes_per_regime": episodes_per_regime,
         "success_u0": success_u0,
         "success_u1": success_u1,
@@ -458,7 +558,7 @@ def _write_csv(rows: list[dict[str, object]], path: Path) -> None:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Forced-U evaluation for HiddenFork checkpoints")
+    p = argparse.ArgumentParser(description="Forced-U evaluation for HiddenTrap HiddenFork checkpoints")
     p.add_argument(
         "--checkpoints",
         type=Path,
@@ -476,7 +576,7 @@ def main() -> None:
         "-o",
         "--output",
         type=Path,
-        default=ROOT / "results" / "hidden_fork_forced_u_eval.csv",
+        default=ROOT / "results" / "hidden_fork_hidden_trap_forced_u_eval.csv",
     )
     p.add_argument("--eval-env-id", type=str, default=ENV_CONF)
     p.add_argument("--episodes-per-regime", type=int, default=100)
@@ -504,6 +604,13 @@ def main() -> None:
         default="time",
         choices=["time", "nearest"],
         help="How to align current state with the oracle reference trajectory",
+    )
+    p.add_argument(
+        "--goal-mode",
+        type=str,
+        default="open_book",
+        choices=["open_book", "merge_shared"],
+        help="Use branch-specific future targets or a shared merge target near the fork",
     )
     p.add_argument(
         "--plan-depth",
@@ -580,6 +687,7 @@ def main() -> None:
             lookahead_k=args.lookahead_k,
             future_window=args.future_window,
             alignment_mode=args.alignment_mode,
+            goal_mode=args.goal_mode,
             plan_depth=args.plan_depth,
             max_eval_steps=args.max_eval_steps,
             collision_penalty=args.collision_penalty,

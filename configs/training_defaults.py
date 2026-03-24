@@ -19,7 +19,8 @@ TRAIN_SEED = 0
 # TRAIN_ENV_ID = "MiniGrid-Empty-5x5-v0"
 # TRAIN_ENV_ID = "CausalContrastive-HiddenFork-15x15-Clean-v0"
 # TRAIN_ENV_ID = "CausalContrastive-HiddenFork-15x15-v0"
-TRAIN_ENV_ID = "CausalContrastive-HiddenFork-15x15-v0"
+# TRAIN_ENV_ID = "CausalContrastive-HiddenForkHiddenTrap-15x15-Clean-v0"
+TRAIN_ENV_ID = "CausalContrastive-HiddenForkHiddenTrap-15x15-v0"
 
 TRAIN_MAX_EPISODE_STEPS = 500
 TRAIN_NUM_EPISODES = 50

@@ -9,12 +9,22 @@ def register_causal_envs() -> None:
     register(
         id="CausalContrastive-HiddenFork-15x15-v0",
         entry_point="envs.hidden_regime_fork:HiddenRegimeForkEnv",
-        kwargs={"size": 15, "confound": True},
+        kwargs={"size": 15, "confound": True, "map_variant": "branch_wall"},
     )
     register(
         id="CausalContrastive-HiddenFork-15x15-Clean-v0",
         entry_point="envs.hidden_regime_fork:HiddenRegimeForkEnv",
-        kwargs={"size": 15, "confound": False},
+        kwargs={"size": 15, "confound": False, "map_variant": "branch_wall"},
+    )
+    register(
+        id="CausalContrastive-HiddenForkHiddenTrap-15x15-v0",
+        entry_point="envs.hidden_regime_fork:HiddenRegimeForkEnv",
+        kwargs={"size": 15, "confound": True, "map_variant": "hidden_trap"},
+    )
+    register(
+        id="CausalContrastive-HiddenForkHiddenTrap-15x15-Clean-v0",
+        entry_point="envs.hidden_regime_fork:HiddenRegimeForkEnv",
+        kwargs={"size": 15, "confound": False, "map_variant": "hidden_trap"},
     )
 
 

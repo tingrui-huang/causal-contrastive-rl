@@ -1,18 +1,15 @@
 """
-Hidden regime fork: two map layouts differ in which side detour reconnects to the goal.
+Hidden regime fork with switchable map variants.
 
 At each reset, sample ``U ∈ {0,1}`` (when ``confound=True``). The observation does not
 contain ``U``; it is exposed only in ``info["confounder"]`` for debugging.
 
-**Layout (default size 15×15):** goal at top center ``(cx, 1)``, agent at bottom center
-``(cx, height-2)`` facing up. A **long** vertical corridor runs up the center column, but
-the center cell at ``(cx, fork_row)`` is blocked. The agent must detour around that wall:
-``U=0`` opens only the left bypass, while ``U=1`` opens only the right bypass. The fork sits
-far enough **above** the starting position that, with MiniGrid's 7×7 egocentric view
-(facing up), the blocked fork and side corridor are **outside** the field of view for the
-first few ``forward`` steps — so ``U=0`` vs ``U=1`` yield identical ``obs["image"]`` at
-reset and after 1–2 forwards (same seed), while futures still diverge once the agent
-approaches the fork.
+Supported map variants:
+
+- ``branch_wall`` (legacy / default): one visible branch is blocked by walls, the other
+  branch is open.
+- ``hidden_trap``: both branches look open and symmetric, but one side is a latent
+  regime-dependent failure corridor that terminates the episode with zero reward.
 
 See ``experiments/inspect_hidden_fork.py`` to verify aliasing.
 """
@@ -30,6 +27,7 @@ from minigrid.minigrid_env import MiniGridEnv
 # Row where left/right branches split (must stay "above" the 7×7 view for agent at
 # bottom for the first ~2 forward steps; validated with size >= 15).
 _DEFAULT_FORK_ROW = 4
+_SUPPORTED_MAP_VARIANTS = ("branch_wall", "hidden_trap")
 
 
 class HiddenRegimeForkEnv(MiniGridEnv):
@@ -52,6 +50,7 @@ class HiddenRegimeForkEnv(MiniGridEnv):
         size: int = 15,
         confound: bool = True,
         fixed_u: int | None = None,
+        map_variant: str = "branch_wall",
         fork_row: int | None = None,
         max_steps: int | None = None,
         **kwargs: Any,
@@ -64,11 +63,17 @@ class HiddenRegimeForkEnv(MiniGridEnv):
             )
         self._size = size
         self.confound = confound
+        if map_variant not in _SUPPORTED_MAP_VARIANTS:
+            raise ValueError(
+                f"map_variant must be one of {_SUPPORTED_MAP_VARIANTS}, got {map_variant!r}"
+            )
+        self.map_variant = map_variant
         if fixed_u is not None and fixed_u not in (0, 1):
             raise ValueError("fixed_u must be None, 0, or 1")
         self.fixed_u: int | None = fixed_u
         self.hidden_u: int = 0
         self._fork_row = int(fork_row) if fork_row is not None else _DEFAULT_FORK_ROW
+        self._unsafe_branch_cells: set[tuple[int, int]] = set()
 
         mission_space = MissionSpace(mission_func=lambda: "reach the goal at the top")
 
@@ -99,6 +104,7 @@ class HiddenRegimeForkEnv(MiniGridEnv):
         self.grid.wall_rect(0, 0, width, height)
 
         walkable = self._walkable_cells(width, height, self.hidden_u)
+        self._unsafe_branch_cells = self._hidden_trap_cells(width, self.hidden_u)
 
         for j in range(1, height - 1):
             for i in range(1, width - 1):
@@ -113,7 +119,7 @@ class HiddenRegimeForkEnv(MiniGridEnv):
         self.mission = "reach the goal at the top"
 
     def _walkable_cells(self, width: int, height: int, u: int) -> set[tuple[int, int]]:
-        """Return floor cells for regime ``u`` (0 = left branch open, 1 = right)."""
+        """Return floor cells for regime ``u`` under the selected map variant."""
         cx = width // 2
         bottom = height - 2
         f = self._fork_row
@@ -121,13 +127,30 @@ class HiddenRegimeForkEnv(MiniGridEnv):
         # Center spine from the goal to the agent start, except for the blocked fork cell.
         cells = {(cx, y) for y in range(1, bottom + 1) if y != f}
 
-        # Regime-dependent bypass around the blocked center cell at y=f.
-        if u == 0:
-            cells.update({(cx - 1, f + 1), (cx - 1, f), (cx - 1, f - 1)})
-        else:
-            cells.update({(cx + 1, f + 1), (cx + 1, f), (cx + 1, f - 1)})
+        left_branch = {(cx - 1, f + 1), (cx - 1, f), (cx - 1, f - 1)}
+        right_branch = {(cx + 1, f + 1), (cx + 1, f), (cx + 1, f - 1)}
+        if self.map_variant == "branch_wall":
+            if u == 0:
+                cells.update(left_branch)
+            else:
+                cells.update(right_branch)
+            return cells
+        if self.map_variant == "hidden_trap":
+            cells.update(left_branch)
+            cells.update(right_branch)
+            return cells
+        raise RuntimeError(f"Unsupported map_variant: {self.map_variant!r}")
 
-        return cells
+    def _hidden_trap_cells(self, width: int, u: int) -> set[tuple[int, int]]:
+        if self.map_variant != "hidden_trap":
+            return set()
+        cx = width // 2
+        f = self._fork_row
+        if u == 0:
+            unsafe_x = cx + 1
+        else:
+            unsafe_x = cx - 1
+        return {(unsafe_x, f + 1), (unsafe_x, f), (unsafe_x, f - 1)}
 
     def reset(
         self,
@@ -138,4 +161,22 @@ class HiddenRegimeForkEnv(MiniGridEnv):
         obs, info = super().reset(seed=seed, options=options)
         info = dict(info)
         info["confounder"] = int(self.hidden_u)
+        info["map_variant"] = self.map_variant
         return obs, info
+
+    def step(self, action: int):
+        obs, reward, terminated, truncated, info = super().step(action)
+        info = dict(info)
+        if (
+            self.map_variant == "hidden_trap"
+            and not terminated
+            and not truncated
+            and tuple(int(v) for v in self.agent_pos) in self._unsafe_branch_cells
+        ):
+            terminated = True
+            reward = 0
+            info["hidden_trap_triggered"] = True
+        else:
+            info["hidden_trap_triggered"] = False
+        info["map_variant"] = self.map_variant
+        return obs, reward, terminated, truncated, info

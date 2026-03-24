@@ -1,5 +1,5 @@
 """
-Run the full confounded HiddenFork batch unattended:
+Run the full confounded HiddenTrap HiddenFork batch unattended:
 
 1. Train baseline for 5 seeds.
 2. Train robust_v1 for 5 seeds x requested weights.
@@ -212,6 +212,7 @@ def run_pipeline(
     lookahead_k: int,
     future_window: int,
     alignment_mode: str,
+    goal_mode: str,
     plan_depth: int,
     max_eval_steps: int,
     collision_penalty: float,
@@ -284,6 +285,7 @@ def run_pipeline(
             lookahead_k=lookahead_k,
             future_window=future_window,
             alignment_mode=alignment_mode,
+            goal_mode=goal_mode,
             plan_depth=plan_depth,
             max_eval_steps=max_eval_steps,
             collision_penalty=collision_penalty,
@@ -306,7 +308,7 @@ def run_pipeline(
 
 def main() -> None:
     p = argparse.ArgumentParser(
-        description="Overnight confounded HiddenFork batch runner (default: weak-planner 2-seed ablation)"
+        description="Overnight confounded HiddenTrap batch runner (default: merge-shared closed-book 2-seed ablation)"
     )
     p.add_argument(
         "--seeds",
@@ -325,22 +327,22 @@ def main() -> None:
     p.add_argument(
         "--baseline-output",
         type=Path,
-        default=ROOT / "results" / "hidden_fork_confounded_baseline_2seed.csv",
+        default=ROOT / "results" / "hidden_fork_hidden_trap_confounded_baseline_2seed.csv",
     )
     p.add_argument(
         "--robust-output",
         type=Path,
-        default=ROOT / "results" / "hidden_fork_confounded_robust_v1_weak_planner_2seed.csv",
+        default=ROOT / "results" / "hidden_fork_hidden_trap_confounded_robust_v1_merge_shared_2seed.csv",
     )
     p.add_argument(
         "--eval-output",
         type=Path,
-        default=ROOT / "results" / "hidden_fork_forced_u_eval_weak_planner_2seed.csv",
+        default=ROOT / "results" / "hidden_fork_hidden_trap_forced_u_eval_merge_shared_2seed.csv",
     )
     p.add_argument(
         "--main-table-output",
         type=Path,
-        default=ROOT / "results" / "hidden_fork_forced_u_main_table_weak_planner_2seed.csv",
+        default=ROOT / "results" / "hidden_fork_hidden_trap_forced_u_main_table_merge_shared_2seed.csv",
     )
     p.add_argument("--episodes-per-regime", type=int, default=100)
     p.add_argument("--action-subset", type=str, default="left,right,forward")
@@ -352,9 +354,15 @@ def main() -> None:
         default="time",
         choices=["time", "nearest"],
     )
+    p.add_argument(
+        "--goal-mode",
+        type=str,
+        default="merge_shared",
+        choices=["open_book", "merge_shared"],
+    )
     p.add_argument("--plan-depth", type=int, default=2)
     p.add_argument("--max-eval-steps", type=int, default=60)
-    p.add_argument("--collision-penalty", type=float, default=0.0)
+    p.add_argument("--collision-penalty", type=float, default=3.0)
     p.add_argument("--turn-penalty", type=float, default=0.05)
     p.add_argument("--progress-bonus", type=float, default=0.75)
     p.add_argument("--success-bonus", type=float, default=5.0)
@@ -372,6 +380,7 @@ def main() -> None:
         lookahead_k=args.lookahead_k,
         future_window=args.future_window,
         alignment_mode=args.alignment_mode,
+        goal_mode=args.goal_mode,
         plan_depth=args.plan_depth,
         max_eval_steps=args.max_eval_steps,
         collision_penalty=args.collision_penalty,
