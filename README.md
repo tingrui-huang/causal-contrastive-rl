@@ -99,6 +99,34 @@ python experiments/probe_hidden_u_robust_v1.py
 python experiments/heatmap_hidden_fork_actions_robust_v1.py
 ```
 
+## Forced-U evaluation batch
+
+For the current overnight comparison entrypoint, use:
+
+```bash
+python experiments/run_forced_u_full_batch.py
+```
+
+This script now defaults to the **weak-planner ablation** configuration:
+
+- seeds: `0,1`
+- robust weights: `0.5, 0.8, 1.0`
+- planner: `plan_depth=2`
+- `collision_penalty=0.0`
+- `turn_penalty=0.05`
+- `progress_bonus=0.75`
+- `success_bonus=5.0`
+
+It writes four CSV files incrementally while running:
+
+- `results/hidden_fork_confounded_baseline_2seed.csv`
+- `results/hidden_fork_confounded_robust_v1_weak_planner_2seed.csv`
+- `results/hidden_fork_forced_u_eval_weak_planner_2seed.csv`
+- `results/hidden_fork_forced_u_main_table_weak_planner_2seed.csv`
+
+Use this batch when you want to test whether removing the hard collision penalty
+reveals differences between `softmax_baseline` and `robust_v1` at the fork.
+
 - If PyTorch loads: uses **PyTorch**; device is **`cuda`** when available and a tiny CUDA alloc succeeds, else **`cpu`**. Checkpoint: **`checkpoints/contrastive_baseline.pt`**.
 - If `import torch` **raises** (e.g. `torch_cuda.dll` / WinError 127): automatically uses **NumPy** backend (CPU). Checkpoint: **`checkpoints/contrastive_baseline.npz`**.
 

@@ -546,6 +546,20 @@ python experiments/run_pipeline.py --env <confounded_env_id>
   1. `worst_case_success`
   2. `regime_gap`
   3. `mean_success`
+- Current diagnostic follow-up after ceiling results:
+  - run a **weak-planner ablation** where forced-U evaluation keeps the same
+    critic-scoring rule but removes the hard collision prior
+    (`collision_penalty = 0.0`)
+  - keep the remaining planner settings fixed unless explicitly ablating them:
+    - `plan_depth = 2`
+    - `turn_penalty = 0.05`
+    - `progress_bonus = 0.75`
+    - `success_bonus = 5.0`
+  - for fast iteration, the preferred diagnostic batch is:
+    - seeds `0,1`
+    - robust weights `0.5`, `0.8`, `1.0`
+  - interpret this batch as a **policy-extraction sensitivity / weak-planner**
+    check, not as the final headline comparison.
 
 **Policy-extraction contract (STRICT):**
 
@@ -595,6 +609,15 @@ python experiments/run_pipeline.py --env <confounded_env_id>
   - `mean_success`
   - `worst_case_success`
   - `regime_gap`
+- Forced-U evaluation CSVs should additionally include fork-decision behavior:
+  - `fork_visit_rate_u0`
+  - `fork_action_prob_left_u0`
+  - `fork_action_prob_right_u0`
+  - `fork_action_prob_forward_u0`
+  - `fork_visit_rate_u1`
+  - `fork_action_prob_left_u1`
+  - `fork_action_prob_right_u1`
+  - `fork_action_prob_forward_u1`
 - If probe / heatmap / policy evaluation are produced from checkpoints, also log the checkpoint path or checkpoint id.
 
 **Required logging (Phase 8 robust v1):**
