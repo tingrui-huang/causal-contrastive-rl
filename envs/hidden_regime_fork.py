@@ -1,17 +1,18 @@
 """
-Hidden regime fork: two map layouts differ only in which branch to the goal is open.
+Hidden regime fork: two map layouts differ in which side detour reconnects to the goal.
 
 At each reset, sample ``U ∈ {0,1}`` (when ``confound=True``). The observation does not
 contain ``U``; it is exposed only in ``info["confounder"]`` for debugging.
 
 **Layout (default size 15×15):** goal at top center ``(cx, 1)``, agent at bottom center
-``(cx, height-2)`` facing up. A **long** vertical corridor runs the full center column
-from the goal up to the bottom row. The left/right detour sits at ``fork_row`` (default 4),
+``(cx, height-2)`` facing up. A **long** vertical corridor runs up the center column, but
+the center cell at ``(cx, fork_row)`` is blocked. The agent must detour around that wall:
+``U=0`` opens only the left bypass, while ``U=1`` opens only the right bypass. The fork sits
 far enough **above** the starting position that, with MiniGrid's 7×7 egocentric view
-(facing up), the fork and side barriers are **outside** the field of view for the first
-few ``forward`` steps — so ``U=0`` vs ``U=1`` yield identical ``obs["image"]`` at reset
-and after 1–2 forwards (same seed), while futures still diverge once the agent approaches
-the fork.
+(facing up), the blocked fork and side corridor are **outside** the field of view for the
+first few ``forward`` steps — so ``U=0`` vs ``U=1`` yield identical ``obs["image"]`` at
+reset and after 1–2 forwards (same seed), while futures still diverge once the agent
+approaches the fork.
 
 See ``experiments/inspect_hidden_fork.py`` to verify aliasing.
 """
@@ -117,14 +118,14 @@ class HiddenRegimeForkEnv(MiniGridEnv):
         bottom = height - 2
         f = self._fork_row
 
-        # Full center spine: goal at (cx,1) up to bottom start — long trunk before fork.
-        cells = {(cx, y) for y in range(1, bottom + 1)}
+        # Center spine from the goal to the agent start, except for the blocked fork cell.
+        cells = {(cx, y) for y in range(1, bottom + 1) if y != f}
 
-        # One-step side detour at the fork (left vs right); the other side is wall-filled.
+        # Regime-dependent bypass around the blocked center cell at y=f.
         if u == 0:
-            cells.update({(cx - 1, f), (cx - 1, f - 1)})
+            cells.update({(cx - 1, f + 1), (cx - 1, f), (cx - 1, f - 1)})
         else:
-            cells.update({(cx + 1, f), (cx + 1, f - 1)})
+            cells.update({(cx + 1, f + 1), (cx + 1, f), (cx + 1, f - 1)})
 
         return cells
 

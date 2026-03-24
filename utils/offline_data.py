@@ -50,15 +50,22 @@ def _oracle_target_cell(env: gym.Env) -> tuple[int, int]:
     cx = raw.width // 2
     fork_row = int(raw._fork_row)
     u = int(raw.hidden_u)
+    branch_x = cx - 1 if u == 0 else cx + 1
 
-    if ay > fork_row:
+    # Stay on the center trunk until the cell just below the blocked fork.
+    if ay > fork_row + 1:
         return (cx, ay - 1)
-    if ay == fork_row and ax == cx:
-        return (cx - 1, ay) if u == 0 else (cx + 1, ay)
-    if ay == fork_row and ax != cx:
+
+    # Bypass the blocked center fork cell via the regime-selected side corridor.
+    if ay == fork_row + 1 and ax == cx:
+        return (branch_x, ay)
+    if ax == branch_x and ay > fork_row - 1:
         return (ax, ay - 1)
-    if ay == fork_row - 1 and ax != cx:
+
+    # Rejoin the center spine above the blocked fork.
+    if ay == fork_row - 1 and ax == branch_x:
         return (cx, ay)
+
     if ay > 1:
         return (cx, ay - 1)
     return (ax, ay)
