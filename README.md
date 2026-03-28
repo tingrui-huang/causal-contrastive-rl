@@ -12,6 +12,12 @@ Minimal experimental framework for **contrastive RL** and (later) **causal / pes
 
 **Legacy path:** `excuate.md` redirects here so older links keep working.
 
+## Archived code
+
+Previous Phase 8 batch scripts, diagnostics, and result CSVs may be moved to
+`oldversion/` during cleanup. They are preserved for reference but are not part of the
+active pipeline for new environment work.
+
 ## Directory layout
 
 ```text

@@ -460,6 +460,10 @@ python experiments/run_pipeline.py --env <confounded_env_id>
 - `experiments/probe_hidden_u_robust_v1.py` — train one or more robust-v1 models, then run a **pre-divergence** linear probe for hidden `U` on paired `fixed_u=0/1` rollouts using both `action-only` and embedding `h(s,a)` features.
 - `experiments/heatmap_hidden_fork_actions_robust_v1.py` — train one or more robust-v1 models, then export an action-score matrix from the last equal-observation anchor toward `U=0` / `U=1` futures; optionally writes a PNG if `matplotlib` is installed.
 
+**Archival note:** Some older Phase 8 sweep / evaluation / diagnostic scripts may be moved
+to `oldversion/experiments/` during cleanup. Keep this section as the research record even
+if those scripts are no longer active entrypoints for new environment work.
+
 **Interpretation contract (STRICT):**
 
 - Treat the current robust family as a **BCE / log-sigmoid** family, not as the original Phase 6 softmax-contrastive loss.

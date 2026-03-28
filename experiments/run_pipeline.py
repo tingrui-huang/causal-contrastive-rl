@@ -27,7 +27,7 @@ import numpy as np
 
 import envs  # noqa: F401 — register CausalContrastive-* envs
 
-from configs.pipeline_defaults import DEFAULT_PIPELINE_ENV_ID
+from configs.training_defaults import TRAIN_ENV_ID as DEFAULT_PIPELINE_ENV_ID
 from buffers.replay_buffer import ReplayBuffer
 from utils.collector import rollout_episode
 from utils.preprocess import extract_state
@@ -58,8 +58,8 @@ def main() -> None:
         type=str,
         default=DEFAULT_PIPELINE_ENV_ID,
         help=(
-            "Gymnasium env id. Default comes from configs/pipeline_defaults.py "
-            "(edit DEFAULT_PIPELINE_ENV_ID there to avoid long CLI each time)."
+            "Gymnasium env id. Default comes from configs/training_defaults.py "
+            "(edit TRAIN_ENV_ID there to avoid long CLI each time)."
         ),
     )
     args = parser.parse_args()
