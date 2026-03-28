@@ -1,5 +1,0 @@
-method,w,n_seeds,success_u0,success_u1,mean_success,worst_case_success,regime_gap,fork_visit_rate_u0,fork_action_prob_left_u0,fork_action_prob_right_u0,fork_action_prob_forward_u0,fork_visit_rate_u1,fork_action_prob_left_u1,fork_action_prob_right_u1,fork_action_prob_forward_u1
-robust_v1,0.50,2,0.5,0.0,0.25,0.0,0.5,0.5,0.5,0.0,0.0,1.0,0.0,1.0,0.0
-robust_v1,0.80,2,0.5,0.0,0.25,0.0,0.5,0.5,0.5,0.0,0.0,1.0,0.0,1.0,0.0
-robust_v1,1.00,2,1.0,0.5,0.75,0.5,0.5,1.0,1.0,0.0,0.0,1.0,0.0,1.0,0.0
-softmax_baseline,,2,1.0,1.0,1.0,1.0,0.0,1.0,1.0,0.0,0.0,1.0,0.0,1.0,0.0
