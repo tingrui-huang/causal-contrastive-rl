@@ -1,31 +1,33 @@
 """
 Windy corridor environment with multiple route segments.
 
-Phase W2 implementation:
-- preferred host topology for wind experiments
+Current wind semantics follow the Causal-Gymnasium pattern:
 - hidden regime ``U`` sampled at reset
 - wind direction sampled from ``P(wind | U)``
 - wind is observable in ``info`` only, not in ``obs``
-- wind affects `forward` only:
+- wind rewrites the physical effect of `forward`
   - same direction: move 2
   - opposite direction: move 0
-  - otherwise: move 1
+  - lateral direction: move 1 and drift 1 cell sideways when possible
+- optional lethal boundaries can turn drift mistakes into immediate failure
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 from gymnasium import spaces
 from gymnasium.core import ObsType
 from minigrid.core.grid import Grid
 from minigrid.core.mission import MissionSpace
-from minigrid.core.world_object import Goal, Wall
+from minigrid.core.world_object import Goal, Lava, Wall
 from minigrid.minigrid_env import MiniGridEnv
 
-_DEFAULT_WIND_DIST: dict[int, tuple[float, ...]] = {
+WindDistLike = dict[int, tuple[float, ...]] | Callable[[int, tuple[int, int]], tuple[float, ...]]
+
+_DEFAULT_SHELTERED_WIND_DIST: dict[int, tuple[float, ...]] = {
     0: (0.05, 0.05, 0.05, 0.05, 0.80),
-    1: (0.25, 0.25, 0.05, 0.05, 0.40),
+    1: (0.20, 0.20, 0.05, 0.05, 0.50),
 }
 
 
@@ -43,9 +45,10 @@ class WindyCorridorEnv(MiniGridEnv):
         size: int = 15,
         confound: bool = True,
         fixed_u: int | None = None,
-        wind_dist: dict[int, tuple[float, ...]] | None = None,
+        wind_dist: WindDistLike | None = None,
         wind_strength: float = 1.0,
         wind_per: str = "step",
+        lethal_boundaries: bool = False,
         max_steps: int | None = None,
         **kwargs: Any,
     ) -> None:
@@ -64,7 +67,8 @@ class WindyCorridorEnv(MiniGridEnv):
         self.hidden_u: int = 0
         self.wind_strength = float(wind_strength)
         self.wind_per = wind_per
-        self.wind_dist = self._validate_wind_dist(wind_dist or _DEFAULT_WIND_DIST)
+        self.lethal_boundaries = bool(lethal_boundaries)
+        self.wind_dist = self._validate_wind_dist(wind_dist or self._default_wind_dist)
         self.wind_direction: int = 4
         self._step_count_for_debug = 0
 
@@ -92,27 +96,63 @@ class WindyCorridorEnv(MiniGridEnv):
         )
 
     @staticmethod
+    def _validate_wind_probs(probs_like: tuple[float, ...] | list[float]) -> tuple[float, ...]:
+        probs = tuple(float(v) for v in probs_like)
+        if len(probs) != 5:
+            raise ValueError("wind probabilities must have exactly 5 entries")
+        if any(v < 0.0 for v in probs):
+            raise ValueError("wind probabilities must be non-negative")
+        total = sum(probs)
+        if not np.isclose(total, 1.0):
+            raise ValueError(f"wind probabilities must sum to 1.0, got {total}")
+        return probs
+
+    @classmethod
     def _validate_wind_dist(
-        wind_dist: dict[int, tuple[float, ...]],
-    ) -> dict[int, tuple[float, ...]]:
+        cls,
+        wind_dist: WindDistLike,
+    ) -> WindDistLike:
+        if callable(wind_dist):
+            return wind_dist
+
         validated: dict[int, tuple[float, ...]] = {}
         for u in (0, 1):
             if u not in wind_dist:
                 raise ValueError(f"wind_dist missing key {u}")
-            probs = tuple(float(v) for v in wind_dist[u])
-            if len(probs) != 5:
-                raise ValueError("each wind_dist[u] must have exactly 5 probabilities")
-            if any(v < 0.0 for v in probs):
-                raise ValueError("wind probabilities must be non-negative")
-            total = sum(probs)
-            if not np.isclose(total, 1.0):
-                raise ValueError(f"wind_dist[{u}] must sum to 1.0, got {total}")
-            validated[u] = probs
+            validated[u] = cls._validate_wind_probs(wind_dist[u])
         return validated
 
-    def _effective_wind_probs(self) -> tuple[float, ...]:
+    def _default_wind_dist(self, u: int, pos: tuple[int, int]) -> tuple[float, ...]:
+        x, y = pos
+        if x >= 8 and y == 13:
+            exposed = {
+                0: (0.10, 0.05, 0.05, 0.05, 0.75),
+                1: (0.55, 0.10, 0.05, 0.05, 0.25),
+            }
+            return exposed[u]
+        if x == 11 and 6 <= y <= 13:
+            exposed = {
+                0: (0.10, 0.05, 0.05, 0.10, 0.70),
+                1: (0.55, 0.10, 0.05, 0.05, 0.25),
+            }
+            return exposed[u]
+        if (x, y) in {(12, 5), (13, 5)}:
+            exposed = {
+                0: (0.10, 0.05, 0.05, 0.05, 0.75),
+                1: (0.50, 0.05, 0.05, 0.05, 0.35),
+            }
+            return exposed[u]
+        return _DEFAULT_SHELTERED_WIND_DIST[u]
+
+    def _base_wind_probs(self, pos: tuple[int, int] | None = None) -> tuple[float, ...]:
+        position = tuple(int(v) for v in (self.agent_pos if pos is None else pos))
+        if callable(self.wind_dist):
+            return self._validate_wind_probs(self.wind_dist(int(self.hidden_u), position))
+        return self._validate_wind_probs(self.wind_dist[self.hidden_u])
+
+    def _effective_wind_probs(self, pos: tuple[int, int] | None = None) -> tuple[float, ...]:
         calm = np.array((0.0, 0.0, 0.0, 0.0, 1.0), dtype=np.float64)
-        regime = np.array(self.wind_dist[self.hidden_u], dtype=np.float64)
+        regime = np.array(self._base_wind_probs(pos), dtype=np.float64)
         mixed = (1.0 - self.wind_strength) * calm + self.wind_strength * regime
         return tuple(float(v) for v in mixed)
 
@@ -152,6 +192,16 @@ class WindyCorridorEnv(MiniGridEnv):
         }
 
     @staticmethod
+    def hazard_cells() -> set[tuple[int, int]]:
+        return {
+            (10, 10),
+            (10, 11),
+            (12, 10),
+            (12, 11),
+            (12, 12),
+        }
+
+    @staticmethod
     def start_pos() -> tuple[int, int]:
         return (1, 13)
 
@@ -166,10 +216,11 @@ class WindyCorridorEnv(MiniGridEnv):
         self.grid.wall_rect(0, 0, width, height)
 
         walkable = self.walkable_cells()
+        hazards = self.hazard_cells() if self.lethal_boundaries else set()
         for y in range(1, height - 1):
             for x in range(1, width - 1):
                 if (x, y) not in walkable:
-                    self.grid.set(x, y, Wall())
+                    self.grid.set(x, y, Lava() if (x, y) in hazards else Wall())
 
         gx, gy = self.goal_pos()
         self.put_obj(Goal(), gx, gy)
@@ -194,6 +245,7 @@ class WindyCorridorEnv(MiniGridEnv):
         info["wind_direction"] = int(self.wind_direction)
         info["wind_strength"] = float(self.wind_strength)
         info["wind_per"] = self.wind_per
+        info["lethal_boundaries"] = bool(self.lethal_boundaries)
         return obs, info
 
     def step(self, action: int):
@@ -249,6 +301,7 @@ class WindyCorridorEnv(MiniGridEnv):
         info["wind_direction"] = int(self.wind_direction)
         info["wind_strength"] = float(self.wind_strength)
         info["wind_per"] = self.wind_per
+        info["lethal_boundaries"] = bool(self.lethal_boundaries)
         return obs, reward, terminated, truncated, info
 
     def _augment_obs(self, obs: ObsType) -> ObsType:
@@ -258,28 +311,59 @@ class WindyCorridorEnv(MiniGridEnv):
         return obs
 
     def _step_forward_with_wind(self) -> tuple[float, bool]:
-        moves = self._wind_adjusted_forward_steps()
+        action_sequence = self._wind_action_sequence()
         reward = 0.0
         terminated = False
 
-        for _ in range(moves):
-            step_reward, step_terminated = self._advance_once()
+        for action in action_sequence:
+            step_reward, step_terminated = self._apply_internal_action(action)
             reward += step_reward
             terminated = terminated or step_terminated
             if terminated:
                 break
         return reward, terminated
 
-    def _wind_adjusted_forward_steps(self) -> int:
+    def _wind_action_sequence(self) -> tuple[int, ...]:
         if self.wind_strength <= 0.0:
-            return 1
+            return (self.actions.forward,)
         if self.wind_direction == 4:
-            return 1
+            return (self.actions.forward,)
         if self.agent_dir == self.wind_direction:
-            return 2
+            return (self.actions.forward, self.actions.forward)
         if (self.agent_dir - 2) % 4 == self.wind_direction:
-            return 0
-        return 1
+            return ()
+
+        turn_action = self._turn_action_toward(self.wind_direction)
+        turn_back_action = self.actions.left if turn_action == self.actions.right else self.actions.right
+        return (
+            self.actions.forward,
+            turn_action,
+            self.actions.forward,
+            turn_back_action,
+        )
+
+    def _turn_action_toward(self, direction: int) -> int:
+        delta = (direction - self.agent_dir) % 4
+        if delta == 1:
+            return self.actions.right
+        if delta == 3:
+            return self.actions.left
+        raise ValueError(
+            f"Wind direction {direction} is not lateral to agent_dir {self.agent_dir}"
+        )
+
+    def _apply_internal_action(self, action: int) -> tuple[float, bool]:
+        if action == self.actions.left:
+            self.agent_dir = (self.agent_dir - 1) % 4
+            return 0.0, False
+        if action == self.actions.right:
+            self.agent_dir = (self.agent_dir + 1) % 4
+            return 0.0, False
+        if action == self.actions.forward:
+            return self._advance_once()
+        if action == self.actions.done:
+            return 0.0, False
+        raise ValueError(f"Unsupported internal action: {action}")
 
     def _advance_once(self) -> tuple[float, bool]:
         fwd_pos = self.front_pos

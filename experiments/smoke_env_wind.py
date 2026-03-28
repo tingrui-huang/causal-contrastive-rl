@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import numpy as np
 from minigrid.core.actions import Actions
 
 from envs.windy_corridor import WindyCorridorEnv
@@ -129,32 +130,88 @@ def run_w1() -> None:
 
 
 def run_w2() -> None:
-    test_wind_dist = {
-        0: (0.0, 0.0, 0.0, 0.0, 1.0),  # U=0: no wind
-        1: (1.0, 0.0, 0.0, 0.0, 0.0),  # U=1: always wind to the right
-    }
-    next_positions: dict[int, tuple[int, int]] = {}
-
-    for u in (0, 1):
+    def _single_step_case(
+        *,
+        pos: tuple[int, int],
+        agent_dir: int,
+        wind_dist: dict[int, tuple[float, ...]],
+        expected_pos: tuple[int, int],
+        expected_dir: int,
+        label: str,
+    ) -> tuple[int, int]:
         env = WindyCorridorEnv(
             render_mode="rgb_array",
             confound=True,
-            fixed_u=u,
+            fixed_u=1,
             wind_strength=1.0,
-            wind_per="step",
-            wind_dist=test_wind_dist,
+            wind_per="episode",
+            wind_dist=wind_dist,
         )
         env.reset(seed=0)
-        env.agent_pos = (8, 13)
-        env.agent_dir = 0  # face right
+        env.agent_pos = pos
+        env.agent_dir = agent_dir
         _, _, _, _, info = env.step(Actions.forward)
         next_pos = tuple(int(v) for v in env.agent_pos)
-        next_positions[u] = next_pos
-        print(f"[Dynamics] U={u} wind_dir={int(info['wind_direction'])} next_pos = {next_pos}")
+        next_dir = int(env.agent_dir)
+        print(
+            f"[Dynamics] {label} wind_dir={int(info['wind_direction'])} "
+            f"next_pos = {next_pos} next_dir = {next_dir}"
+        )
         env.close()
+        if next_pos != expected_pos or next_dir != expected_dir:
+            raise RuntimeError(
+                f"Phase W2 failed for {label}: expected pos={expected_pos}, dir={expected_dir}; "
+                f"got pos={next_pos}, dir={next_dir}."
+            )
+        return next_pos
 
-    if next_positions[0] == next_positions[1]:
-        raise RuntimeError("Phase W2 failed: expected different next_pos across U.")
+    calm_pos = _single_step_case(
+        pos=(8, 13),
+        agent_dir=0,
+        wind_dist={
+            0: (0.0, 0.0, 0.0, 0.0, 1.0),
+            1: (0.0, 0.0, 0.0, 0.0, 1.0),
+        },
+        expected_pos=(9, 13),
+        expected_dir=0,
+        label="calm",
+    )
+    tailwind_pos = _single_step_case(
+        pos=(8, 13),
+        agent_dir=0,
+        wind_dist={
+            0: (0.0, 0.0, 0.0, 0.0, 1.0),
+            1: (1.0, 0.0, 0.0, 0.0, 0.0),
+        },
+        expected_pos=(10, 13),
+        expected_dir=0,
+        label="tailwind",
+    )
+    headwind_pos = _single_step_case(
+        pos=(8, 13),
+        agent_dir=0,
+        wind_dist={
+            0: (0.0, 0.0, 0.0, 0.0, 1.0),
+            1: (0.0, 0.0, 1.0, 0.0, 0.0),
+        },
+        expected_pos=(8, 13),
+        expected_dir=0,
+        label="headwind",
+    )
+    lateral_pos = _single_step_case(
+        pos=(10, 9),
+        agent_dir=0,
+        wind_dist={
+            0: (0.0, 0.0, 0.0, 0.0, 1.0),
+            1: (0.0, 1.0, 0.0, 0.0, 0.0),
+        },
+        expected_pos=(11, 10),
+        expected_dir=0,
+        label="lateral_drift",
+    )
+
+    if len({calm_pos, tailwind_pos, headwind_pos, lateral_pos}) < 4:
+        raise RuntimeError("Phase W2 failed: wind modes did not produce distinct transitions.")
 
     # Additional required check: wind_strength=0.0 recovers W1 behavior.
     no_wind_env = WindyCorridorEnv(
@@ -162,8 +219,11 @@ def run_w2() -> None:
         confound=True,
         fixed_u=1,
         wind_strength=0.0,
-        wind_per="step",
-        wind_dist=test_wind_dist,
+        wind_per="episode",
+        wind_dist={
+            0: (0.0, 0.0, 0.0, 0.0, 1.0),
+            1: (1.0, 0.0, 0.0, 0.0, 0.0),
+        },
     )
     no_wind_env.reset(seed=0)
     no_wind_env.agent_pos = (8, 13)
@@ -227,9 +287,81 @@ def run_w3() -> None:
         raise RuntimeError("Phase W3 failed: trajectory statistics did not change across strengths.")
 
 
+def run_wpos() -> None:
+    env = WindyCorridorEnv(
+        render_mode="rgb_array",
+        confound=True,
+        fixed_u=1,
+        wind_strength=1.0,
+        wind_per="step",
+    )
+    env.reset(seed=0)
+
+    sheltered = (3, 13)
+    exposed = (10, 13)
+    sheltered_probs = env._effective_wind_probs(sheltered)
+    exposed_probs = env._effective_wind_probs(exposed)
+
+    sheltered_counts = np.zeros(5, dtype=np.int64)
+    exposed_counts = np.zeros(5, dtype=np.int64)
+
+    for _ in range(400):
+        env.agent_pos = sheltered
+        sheltered_counts[env._sample_wind_direction()] += 1
+        env.agent_pos = exposed
+        exposed_counts[env._sample_wind_direction()] += 1
+
+    env.close()
+
+    print(f"[WindPos] sheltered_probs = {tuple(round(v, 2) for v in sheltered_probs)}")
+    print(f"[WindPos] exposed_probs = {tuple(round(v, 2) for v in exposed_probs)}")
+    print(f"[WindPos] sheltered_counts = {tuple(int(v) for v in sheltered_counts)}")
+    print(f"[WindPos] exposed_counts = {tuple(int(v) for v in exposed_counts)}")
+
+    if np.allclose(sheltered_probs, exposed_probs):
+        raise RuntimeError("Position-dependent wind failed: sheltered/exposed probabilities are identical.")
+    if exposed_probs[0] <= sheltered_probs[0]:
+        raise RuntimeError("Position-dependent wind failed: exposed east-wind probability did not increase.")
+    if exposed_counts[0] <= sheltered_counts[0]:
+        raise RuntimeError("Position-dependent wind failed: exposed samples did not show more east wind.")
+
+
+def run_whazard() -> None:
+    env = WindyCorridorEnv(
+        render_mode="rgb_array",
+        confound=True,
+        fixed_u=1,
+        wind_strength=1.0,
+        wind_per="episode",
+        lethal_boundaries=True,
+        wind_dist={
+            0: (0.0, 0.0, 0.0, 0.0, 1.0),
+            1: (1.0, 0.0, 0.0, 0.0, 0.0),
+        },
+    )
+    _, info = env.reset(seed=0)
+    env.agent_pos = (11, 9)
+    env.agent_dir = 1  # face down so right wind becomes lateral drift into lava
+    _, reward, terminated, truncated, info = env.step(Actions.forward)
+    next_pos = tuple(int(v) for v in env.agent_pos)
+    env.close()
+
+    print(
+        f"[WindHazard] wind_dir={int(info['wind_direction'])} next_pos = {next_pos} "
+        f"reward = {reward:.2f} terminated = {terminated} truncated = {truncated}"
+    )
+
+    if not info["lethal_boundaries"]:
+        raise RuntimeError("Hazard smoke failed: lethal_boundaries flag missing from info.")
+    if next_pos != (12, 10):
+        raise RuntimeError(f"Hazard smoke failed: expected drift into lava at (12, 10), got {next_pos}.")
+    if not terminated or truncated:
+        raise RuntimeError("Hazard smoke failed: drift into lava did not terminate the episode immediately.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Wind smoke script.")
-    parser.add_argument("--phase", required=True, choices=["w1", "w2", "w3"])
+    parser.add_argument("--phase", required=True, choices=["w1", "w2", "w3", "wpos", "whazard"])
     args = parser.parse_args()
 
     if args.phase == "w1":
@@ -238,6 +370,10 @@ def main() -> None:
         run_w2()
     elif args.phase == "w3":
         run_w3()
+    elif args.phase == "wpos":
+        run_wpos()
+    elif args.phase == "whazard":
+        run_whazard()
 
 
 if __name__ == "__main__":
