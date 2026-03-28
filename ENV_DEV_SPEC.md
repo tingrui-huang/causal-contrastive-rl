@@ -98,18 +98,22 @@ exist in the dynamics and the environment is not research-ready.
 | Dynamics channel | None — `step()` uses default MiniGrid forward |
 | Registered ids | `CausalContrastive-HiddenFork-15x15-v0`, `…-Clean-v0`, `…HiddenTrap…-v0`, `…HiddenTrap…-Clean-v0` |
 
-**Known limitation:** The confounder only affects **which cells are walkable or trapped**
-(decided at `reset`). Once the agent is on the center spine, the transition function
-`p(s'|s,a)` is identical for both `U` values. A baseline that memorizes "go straight" can
-still succeed without ever needing to distinguish regimes. This limits the **confounding
-strength** available for experiments.
+**Known limitations (motivating §5A/§5B topology upgrade):**
+
+1. The confounder only affects **which cells are walkable or trapped** (decided at
+   `reset`). Once the agent is on the center spine, `p(s'|s,a)` is identical for both `U`.
+2. A baseline that memorizes "go straight" can succeed without distinguishing regimes.
+3. The single-spine-plus-terminal-fork layout violates the topology requirements in §5B
+   and is therefore **not eligible** as the preferred benchmark for wind experiments.
+
+This environment remains available for **legacy comparison** and ablation studies.
 
 ---
 
-## 5. Next Target: Dynamic Wind Confounder
+## 5. Dynamic Wind Confounder (Mechanism Specification)
 
-> This section defines the **next planned extension**. The protocol itself (§3, §6–§12)
-> remains valid for future designs.
+> This section specifies the **wind mechanism in isolation**. It is independent of any
+> particular host map. Which map carries this mechanism is defined in §5A.
 
 ### 5.1 Motivation
 
@@ -118,8 +122,9 @@ we add **regime-dependent wind** that modifies the **transition dynamics** of `s
 not just the map geometry. This creates confounding that is:
 
 - **Continuous in strength** — tunable via `wind_strength` and `P(wind | U)`.
-- **Active every step** — not only at the fork decision point.
+- **Active every step** — not only at a single decision point.
 - **Invisible** — wind direction / presence is not in `obs`.
+- **Host-agnostic** — can be layered onto any MiniGrid topology that satisfies §5B.
 
 ### 5.2 Wind Mechanics (Specification)
 
@@ -177,18 +182,20 @@ The environment MUST expose a **`wind_strength`** parameter in `[0.0, 1.0]`:
 This allows **sweeping confounding strength** to find the regime where baseline degrades
 but our method still works.
 
-### 5.5 Composability with Map Variants
+### 5.5 Composability with Host Topologies
 
-Wind is **orthogonal** to the map variant:
+Wind is **orthogonal** to the host map. Any map that satisfies the topology requirements
+in §5B can serve as the host. The wind layer MUST NOT hard-code assumptions about a
+specific map layout (e.g. fork position, corridor count).
 
-| Combination | Geometry | Dynamics |
-|-------------|----------|----------|
-| `hidden_trap` + no wind | Symmetric branches, latent trap | Default MiniGrid forward |
-| `hidden_trap` + wind | Symmetric branches, latent trap | Regime-dependent stochastic forward |
-| `branch_wall` + wind | Asymmetric branches | Regime-dependent stochastic forward |
+| Combination | Purpose |
+|-------------|---------|
+| `HiddenFork` + wind | Legacy comparison only — validates wind on existing env |
+| `WindyCorridor` + wind | **Preferred next target** — multi-segment route network |
+| `<future_map>` + wind | Extensible — any §5B-compliant map |
 
-All combinations MUST be testable. The wind extension MUST NOT break existing map variant
-behavior when `wind_strength = 0.0`.
+All combinations MUST be testable. The wind extension MUST NOT break host map behavior
+when `wind_strength = 0.0`.
 
 ### 5.6 Information Contract
 
@@ -198,6 +205,137 @@ behavior when `wind_strength = 0.0`.
 | `wind_direction` (current step) | NO | YES (`info["wind_direction"]`) | YES |
 | `wind_strength` (config) | NO | YES (`info["wind_strength"]`) | YES |
 | `wind_dist` (config) | NO | NO (constructor only) | YES (at reset) |
+
+---
+
+## 5A. Host Topology Candidates
+
+> Wind (§5) needs a map to live on. This section lists candidate topologies, ranked by
+> suitability. The **preferred** candidate is the one used in the W-phase execution
+> protocol (§8). Legacy candidates remain available for ablation.
+
+### 5A.1 Legacy: `HiddenRegimeFork` (single spine + terminal fork)
+
+| Property | Value |
+|----------|-------|
+| Layout | Single center column, one binary fork near the top |
+| Decision points | 1 (the fork) |
+| Where U matters | Only at the fork — the rest of the spine is U-independent |
+| Status | **Legacy / comparison only** |
+
+**Why it is insufficient:** A baseline that memorizes "go straight" reaches the fork
+without ever needing to reason about dynamics. The confounder only bites at one late
+decision point. Wind on a single column mostly reduces to "sometimes you don't move"
+which is annoying but not deeply confounding — the agent has no alternative route to
+choose.
+
+### 5A.2 Preferred: `WindyCorridor` (multi-segment route network)
+
+| Property | Value |
+|----------|-------|
+| Layout | 15×15 grid with **3 horizontal corridors** connected by **2–3 vertical passages** |
+| Decision points | Multiple (at each corridor junction) |
+| Where U matters | Wind affects every forward step; route choice determines exposure |
+| Goal | Top-right area |
+| Start | Bottom-left area |
+
+**Topology sketch (conceptual, not final cell layout):**
+
+```text
+  ################
+  #     G        #    G = Goal (top-right region)
+  # ############ #
+  #    .    .    #    Horizontal corridors connected by
+  # ## # ## # ## #    vertical passages (the dots)
+  #    .    .    #
+  # ############ #
+  #    .    .    #
+  # ## # ## # ## #
+  # S            #    S = Start (bottom-left region)
+  ################
+```
+
+**Why this is better:**
+
+- **Multiple route segments** — the agent must traverse several corridors, each exposed
+  to wind. There is no single "go straight" strategy.
+- **Route choice under uncertainty** — passages connect corridors at different x-positions.
+  Under U=0 (calm), the shortest path through the center passages is optimal. Under U=1
+  (strong rightward/downward wind), the agent may be blown past a passage opening or
+  pushed into walls, making a different route preferable.
+- **Wind is relevant along the entire trajectory**, not just at one fork.
+- **Scalable complexity** — adding more corridors or passages increases difficulty without
+  changing the mechanism.
+- **Observation aliasing** — corridor junctions can look identical in the agent's 7×7
+  partial view, but lead to different outcomes depending on wind regime.
+
+**Design constraints:**
+
+- Grid size: 15×15 (same as legacy, keeps observation shape compatible).
+- Corridors are 1-cell wide (standard MiniGrid).
+- At least 2 distinct routes from S to G that differ in wind exposure.
+- Lava or dead-end optional — wind alone should be sufficient confounder.
+
+### 5A.3 Future Candidates (not yet specified)
+
+| Candidate | Idea | Status |
+|-----------|------|--------|
+| `WindyLavaCorridor` | Corridors with lava strips; wind pushes agent into lava under U=1 | Not designed |
+| `WindyIslands` | Disconnected islands linked by narrow bridges; wind makes bridges impassable under U=1 | Not designed |
+
+These are placeholders for future exploration. Do NOT implement until a full §8-style
+phase protocol is written for them.
+
+---
+
+## 5B. Topology Upgrade Requirement (STRICT)
+
+> This section formalizes the requirement that the host map must provide enough structure
+> for wind confounding to be meaningful. It prevents falling back to trivially simple
+> layouts during vibe coding.
+
+### 5B.1 Prohibited Topology Pattern
+
+```text
+Host map MUST NOT be a single center spine ending in one terminal binary fork.
+```
+
+This pattern (the legacy `HiddenRegimeFork`) concentrates all confounding at a single
+late decision point. Wind on a straight corridor adds noise but not meaningful route
+uncertainty.
+
+### 5B.2 Minimum Topology Requirements
+
+A host map is **eligible** for the preferred benchmark if it satisfies ALL of:
+
+| # | Requirement |
+|---|-------------|
+| T1 | At least **3 corridor segments** (not counting outer walls). |
+| T2 | At least **2 distinct routes** from start to goal that differ in total wind-exposed cells by ≥ 30%. |
+| T3 | At least **2 decision points** where the agent must choose between passages/directions. |
+| T4 | Confounding (U via wind) influences route quality **along the trajectory**, not only at one late branch. |
+| T5 | The map fits in a 15×15 grid (observation shape compatibility with existing pipeline). |
+
+### 5B.3 Verification
+
+Topology compliance is verified **once** at map design time (not at runtime):
+
+```bash
+python experiments/smoke_topology.py --map windycorridor
+```
+
+Script MUST print:
+
+```text
+[Topology] routes_found = <int>       # must be >= 2
+[Topology] decision_points = <int>    # must be >= 2
+[Topology] corridor_segments = <int>  # must be >= 3
+[Topology] wind_exposure_diff = <float>  # must be >= 0.30
+[Topology] grid_size = <int>x<int>    # must be <= 15x15
+[Topology] PASS
+```
+
+If any check fails → topology is NOT eligible → redesign before proceeding to W-phases.
 
 ---
 
@@ -229,6 +367,23 @@ Follows the same rules as `DEV_SPEC.md` §6.1:
 
 ## 8. Phased Execution Protocol — Wind Extension
 
+### Environment ID Convention
+
+The W-phases reference two env id tracks. Use the appropriate one depending on context:
+
+| Track | Env ID | Purpose |
+|-------|--------|---------|
+| **Legacy** | `CausalContrastive-HiddenForkHiddenTrap-15x15-Wind-v0` | Validate wind on existing fork map (comparison / ablation) |
+| **Preferred** | `CausalContrastive-WindyCorridor-15x15-v0` | Primary benchmark with upgraded topology (§5A.2) |
+
+Clean (non-confounded) variants append `-Clean` before the version:
+`CausalContrastive-WindyCorridor-15x15-Clean-v0`.
+
+In the phase descriptions below, `<wind_env_id>` means the **preferred** id unless
+explicitly noted. Legacy id is used only where marked `(legacy)`.
+
+---
+
 ### Phase W0 — Baseline Snapshot
 
 **Task:** Verify existing `hidden_trap` environment still passes all `DEV_SPEC.md` Phase 4
@@ -249,19 +404,25 @@ python experiments/run_pipeline.py --env CausalContrastive-HiddenForkHiddenTrap-
 
 ---
 
-### Phase W1 — Wind Sampling Only (No Effect)
+### Phase W1 — Host Map + Wind Sampling (No Effect)
 
 **Task:**
 
-- Add constructor args: `wind_dist`, `wind_strength`, `wind_per`.
+- Implement the preferred host map (`WindyCorridor`, §5A.2) as a new `MiniGridEnv`
+  subclass. Verify it satisfies §5B topology requirements.
+- Add wind constructor args: `wind_dist`, `wind_strength`, `wind_per`.
 - At each `step()` (or `reset()` if `wind_per="episode"`), sample `wind_direction` from
   `wind_dist[hidden_u]`.
 - Store in `info["wind_direction"]` and `info["wind_strength"]`.
 - **DO NOT** modify movement. Wind is sampled but has zero effect.
 
-**Verification command:**
+**Verification commands:**
 
 ```bash
+# Topology compliance (run once at design time)
+python experiments/smoke_topology.py --map windycorridor
+
+# Wind sampling smoke test
 python experiments/smoke_env_wind.py --phase w1
 ```
 
@@ -275,11 +436,11 @@ python experiments/smoke_env_wind.py --phase w1
 
 **Success criteria (STRICT):**
 
+- Topology smoke test prints `[Topology] PASS`.
 - `wind_direction` values appear in `{0,1,2,3,4}`.
 - Agent movement is **identical** to no-wind baseline (compare trajectories with
   `wind_strength=0.0` and `wind_strength=1.0` under the same seed — positions must match
   because wind has no effect yet).
-- All existing `DEV_SPEC.md` Phase 4 log lines still pass.
 
 ---
 
@@ -302,7 +463,7 @@ python experiments/smoke_env_wind.py --phase w2
 
 **Script MUST:**
 
-1. Fix agent position and direction.
+1. Fix agent position and direction on the preferred map.
 2. Set `fixed_u=0`, run one `forward` step, record `next_pos`.
 3. Reset to same position, set `fixed_u=1`, run one `forward` step, record `next_pos`.
 4. Print both.
@@ -332,7 +493,8 @@ Additional check:
 
 **Task:**
 
-- Run a short episode under `wind_strength ∈ {0.0, 0.3, 0.6, 1.0}` with `confound=True`.
+- Run a short episode under `wind_strength ∈ {0.0, 0.3, 0.6, 1.0}` with `confound=True`
+  on `<wind_env_id>`.
 - Collect trajectory lengths and success rates.
 
 **Verification command:**
@@ -359,15 +521,24 @@ python experiments/smoke_env_wind.py --phase w3
 
 **Task:**
 
-- Register new env ids in `envs/__init__.py` for the wind-enabled variants.
-- Naming convention: append `-Wind` before version, e.g.:
-  - `CausalContrastive-HiddenForkHiddenTrap-15x15-Wind-v0`
-  - `CausalContrastive-HiddenForkHiddenTrap-15x15-Wind-Clean-v0`
+- Register new env ids in `envs/__init__.py` for both legacy-wind and preferred-wind
+  variants.
+- Env ids to register:
+
+```text
+# Preferred (WindyCorridor)
+CausalContrastive-WindyCorridor-15x15-v0
+CausalContrastive-WindyCorridor-15x15-Clean-v0
+
+# Legacy (HiddenFork + wind overlay, for comparison)
+CausalContrastive-HiddenForkHiddenTrap-15x15-Wind-v0
+CausalContrastive-HiddenForkHiddenTrap-15x15-Wind-Clean-v0
+```
 
 **Verification command:**
 
 ```bash
-python -c "import gymnasium as gym; import envs; env = gym.make('CausalContrastive-HiddenForkHiddenTrap-15x15-Wind-v0'); print('OK')"
+python -c "import gymnasium as gym; import envs; env = gym.make('CausalContrastive-WindyCorridor-15x15-v0'); print('OK')"
 ```
 
 **Success criteria (STRICT):**
@@ -381,20 +552,20 @@ python -c "import gymnasium as gym; import envs; env = gym.make('CausalContrasti
 
 **Task:**
 
-- Run the full `DEV_SPEC.md` Phase 4 pipeline with a wind-enabled env id.
+- Run the full `DEV_SPEC.md` Phase 4 pipeline with the preferred wind env id.
 - Verify all pipeline log lines still pass.
 - Verify `state_shape` is unchanged (wind must not alter observation dimensionality).
 
 **Verification command:**
 
 ```bash
-python experiments/run_pipeline.py --env CausalContrastive-HiddenForkHiddenTrap-15x15-Wind-v0
+python experiments/run_pipeline.py --env CausalContrastive-WindyCorridor-15x15-v0
 ```
 
 **Success criteria (STRICT):**
 
 - All `DEV_SPEC.md` Phase 4 log lines appear.
-- `[Pipeline] processed state shape = ` matches the non-wind variant exactly.
+- `[Pipeline] processed state shape = ` matches the legacy env observation shape exactly.
 - No `hidden_u` or `wind_direction` leakage into processed state.
 
 **Gate:** Do NOT start training experiments until Phase W5 passes.
@@ -405,14 +576,14 @@ python experiments/run_pipeline.py --env CausalContrastive-HiddenForkHiddenTrap-
 
 **Task:**
 
-- Train the Phase 6 / Phase 8 baseline on the wind-enabled confounded env.
-- Compare forced-regime evaluation (`fixed_u=0`, `fixed_u=1`) against the non-wind
-  baseline results.
+- Train the Phase 6 / Phase 8 baseline on the preferred wind-enabled confounded env.
+- Compare forced-regime evaluation (`fixed_u=0`, `fixed_u=1`) against the clean variant.
+- Optionally repeat on legacy-wind env for comparison.
 
 **Verification command:**
 
 ```bash
-python experiments/train_contrastive_baseline.py --env CausalContrastive-HiddenForkHiddenTrap-15x15-Wind-v0
+python experiments/train_contrastive_baseline.py --env CausalContrastive-WindyCorridor-15x15-v0
 ```
 
 (Or the robust-v1 equivalent with `w=1.0`.)
@@ -422,15 +593,15 @@ python experiments/train_contrastive_baseline.py --env CausalContrastive-HiddenF
 ```text
 [BaselineDegradation] env = <string>
 [BaselineDegradation] wind_strength = <float>
-[BaselineDegradation] mean_success_no_wind = <float>
-[BaselineDegradation] mean_success_with_wind = <float>
-[BaselineDegradation] worst_case_success_no_wind = <float>
-[BaselineDegradation] worst_case_success_with_wind = <float>
+[BaselineDegradation] mean_success_clean = <float>
+[BaselineDegradation] mean_success_confounded = <float>
+[BaselineDegradation] worst_case_success_clean = <float>
+[BaselineDegradation] worst_case_success_confounded = <float>
 ```
 
 **Success criteria (STRICT):**
 
-- Baseline `worst_case_success` degrades under wind compared to no-wind.
+- Baseline `worst_case_success` degrades under confounding compared to clean.
 - If baseline does NOT degrade → increase `wind_strength` or adjust `wind_dist` and
   re-run. If no setting causes degradation → the wind mechanism is too weak and must be
   redesigned before claiming confounding.
@@ -542,6 +713,8 @@ Every environment module MUST:
 - Skipping verification scripts.
 - Silent exception handling (`except: pass`).
 - Changing observation shape/dtype as a side effect of adding dynamics.
+- Using a §5B-non-compliant topology as the **preferred** benchmark (legacy comparison is
+  allowed, but the primary env id for new experiments MUST satisfy §5B).
 
 ---
 

@@ -5,6 +5,7 @@ from typing import Any
 import gymnasium as gym
 import numpy as np
 from minigrid.core.actions import Actions
+from collections import deque
 
 from buffers.replay_buffer import ReplayBuffer
 from configs.training_defaults import TRAIN_MAX_EPISODE_STEPS, TRAIN_REPLAY_CAPACITY
@@ -46,6 +47,15 @@ def _turn_toward(cur_dir: int, target_dir: int) -> int:
 
 def _oracle_target_cell(env: gym.Env) -> tuple[int, int]:
     raw = env.unwrapped
+    if hasattr(raw, "walkable_cells") and hasattr(raw, "goal_pos"):
+        walkable = raw.walkable_cells()
+        start = tuple(int(v) for v in raw.agent_pos)
+        goal_attr = raw.goal_pos
+        goal = goal_attr() if callable(goal_attr) else tuple(int(v) for v in goal_attr)
+        if start == goal:
+            return start
+        return _shortest_path_next_cell(start, goal, walkable)
+
     ax, ay = raw.agent_pos
     cx = raw.width // 2
     fork_row = int(raw._fork_row)
@@ -69,6 +79,38 @@ def _oracle_target_cell(env: gym.Env) -> tuple[int, int]:
     if ay > 1:
         return (cx, ay - 1)
     return (ax, ay)
+
+
+def _shortest_path_next_cell(
+    start: tuple[int, int],
+    goal: tuple[int, int],
+    walkable: set[tuple[int, int]],
+) -> tuple[int, int]:
+    q: deque[tuple[int, int]] = deque([start])
+    parent: dict[tuple[int, int], tuple[int, int] | None] = {start: None}
+
+    while q:
+        cell = q.popleft()
+        if cell == goal:
+            break
+        x, y = cell
+        for nxt in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+            if nxt in walkable and nxt not in parent:
+                parent[nxt] = cell
+                q.append(nxt)
+
+    if goal not in parent:
+        return start
+
+    path = [goal]
+    cur = goal
+    while parent[cur] is not None:
+        cur = parent[cur]
+        path.append(cur)
+    path.reverse()
+    if len(path) < 2:
+        return start
+    return path[1]
 
 
 def build_oracle_eps_policy(

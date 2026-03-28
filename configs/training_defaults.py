@@ -54,6 +54,8 @@ def infer_hidden_confounder(env_id: str) -> bool | None:
     """
     if "CausalContrastive-HiddenFork" in env_id:
         return "Clean" not in env_id
+    if "CausalContrastive-WindyCorridor" in env_id:
+        return "Clean" not in env_id
     if env_id.startswith("MiniGrid-") or env_id.startswith("BabyAI-"):
         return False
     return None
