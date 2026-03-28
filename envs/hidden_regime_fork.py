@@ -17,7 +17,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from gymnasium import spaces
 from gymnasium.core import ObsType
+import numpy as np
 from minigrid.core.grid import Grid
 from minigrid.core.mission import MissionSpace
 from minigrid.core.world_object import Goal, Wall
@@ -86,6 +88,17 @@ class HiddenRegimeForkEnv(MiniGridEnv):
             see_through_walls=True,
             max_steps=max_steps,
             **kwargs,
+        )
+        self.observation_space = spaces.Dict(
+            {
+                **self.observation_space.spaces,
+                "agent_pos": spaces.Box(
+                    low=0,
+                    high=self._size - 1,
+                    shape=(2,),
+                    dtype=np.int64,
+                ),
+            }
         )
 
     def _gen_grid(self, width: int, height: int) -> None:
@@ -159,6 +172,7 @@ class HiddenRegimeForkEnv(MiniGridEnv):
         options: dict[str, Any] | None = None,
     ) -> tuple[ObsType, dict[str, Any]]:
         obs, info = super().reset(seed=seed, options=options)
+        obs = self._augment_obs(obs)
         info = dict(info)
         info["confounder"] = int(self.hidden_u)
         info["map_variant"] = self.map_variant
@@ -166,6 +180,7 @@ class HiddenRegimeForkEnv(MiniGridEnv):
 
     def step(self, action: int):
         obs, reward, terminated, truncated, info = super().step(action)
+        obs = self._augment_obs(obs)
         info = dict(info)
         if (
             self.map_variant == "hidden_trap"
@@ -180,3 +195,9 @@ class HiddenRegimeForkEnv(MiniGridEnv):
             info["hidden_trap_triggered"] = False
         info["map_variant"] = self.map_variant
         return obs, reward, terminated, truncated, info
+
+    def _augment_obs(self, obs: ObsType) -> ObsType:
+        if isinstance(obs, dict):
+            obs = dict(obs)
+            obs["agent_pos"] = np.array(self.agent_pos, dtype=np.int64)
+        return obs

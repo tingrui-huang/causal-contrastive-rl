@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+from gymnasium import spaces
 from gymnasium.core import ObsType
 from minigrid.core.grid import Grid
 from minigrid.core.mission import MissionSpace
@@ -77,6 +78,17 @@ class WindyCorridorEnv(MiniGridEnv):
             see_through_walls=True,
             max_steps=max_steps,
             **kwargs,
+        )
+        self.observation_space = spaces.Dict(
+            {
+                **self.observation_space.spaces,
+                "agent_pos": spaces.Box(
+                    low=0,
+                    high=self._size - 1,
+                    shape=(2,),
+                    dtype=np.int64,
+                ),
+            }
         )
 
     @staticmethod
@@ -175,6 +187,7 @@ class WindyCorridorEnv(MiniGridEnv):
         obs, info = super().reset(seed=seed, options=options)
         self._step_count_for_debug = 0
         self.wind_direction = self._sample_wind_direction()
+        obs = self._augment_obs(obs)
 
         info = dict(info)
         info["confounder"] = int(self.hidden_u)
@@ -230,13 +243,19 @@ class WindyCorridorEnv(MiniGridEnv):
         if self.render_mode == "human":
             self.render()
 
-        obs = self.gen_obs()
+        obs = self._augment_obs(self.gen_obs())
         info: dict[str, Any] = {}
         info["confounder"] = int(self.hidden_u)
         info["wind_direction"] = int(self.wind_direction)
         info["wind_strength"] = float(self.wind_strength)
         info["wind_per"] = self.wind_per
         return obs, reward, terminated, truncated, info
+
+    def _augment_obs(self, obs: ObsType) -> ObsType:
+        if isinstance(obs, dict):
+            obs = dict(obs)
+            obs["agent_pos"] = np.array(self.agent_pos, dtype=np.int64)
+        return obs
 
     def _step_forward_with_wind(self) -> tuple[float, bool]:
         moves = self._wind_adjusted_forward_steps()

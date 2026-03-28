@@ -66,6 +66,7 @@ class WindyHiddenRegimeForkEnv(HiddenRegimeForkEnv):
 
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
         obs, info = super().reset(seed=seed, options=options)
+        obs = self._augment_obs(obs)
         self.wind_direction = self._sample_wind_direction()
         info = dict(info)
         info["wind_direction"] = int(self.wind_direction)
@@ -131,13 +132,19 @@ class WindyHiddenRegimeForkEnv(HiddenRegimeForkEnv):
         if self.render_mode == "human":
             self.render()
 
-        obs = self.gen_obs()
+        obs = self._augment_obs(self.gen_obs())
         info["confounder"] = int(self.hidden_u)
         info["map_variant"] = self.map_variant
         info["wind_direction"] = int(self.wind_direction)
         info["wind_strength"] = float(self.wind_strength)
         info["wind_per"] = self.wind_per
         return obs, reward, terminated, truncated, info
+
+    def _augment_obs(self, obs):
+        if isinstance(obs, dict):
+            obs = dict(obs)
+            obs["agent_pos"] = np.array(self.agent_pos, dtype=np.int64)
+        return obs
 
     def _step_forward_with_wind(self) -> tuple[float, bool]:
         moves = self._wind_adjusted_forward_steps()
