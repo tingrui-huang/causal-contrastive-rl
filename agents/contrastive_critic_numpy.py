@@ -62,11 +62,13 @@ class ContrastiveCriticNumpy:
         emb_dim: int = 64,
         tau: float = 0.07,
         seed: int = 0,
+        loss_family: str = "sigmoid_bce_weight1",
     ) -> None:
         rng = np.random.default_rng(seed)
         self.state_dim = state_dim
         self.n_actions = n_actions
         self.tau = tau
+        self.loss_family = loss_family
         in_dim = state_dim + n_actions
         # He-ish init
         s1 = np.sqrt(2.0 / in_dim)
@@ -105,7 +107,7 @@ class ContrastiveCriticNumpy:
         s_pos: np.ndarray,
         s_neg: np.ndarray,
     ) -> tuple[float, dict[str, np.ndarray]]:
-        """Mean cross-entropy (class 0 = positive); returns loss and param grads."""
+        """Mean contrastive loss and param grads."""
         b = s.shape[0]
         ha, ca = self._embed(s, a)
         hpos, cpos = self._embed(s_pos, a)
@@ -114,17 +116,26 @@ class ContrastiveCriticNumpy:
         pos_logit = np.sum(ha * hpos, axis=1) / self.tau
         neg_logit = np.sum(ha * hneg, axis=1) / self.tau
 
-        # log-softmax stability
-        m = np.maximum(np.maximum(pos_logit, neg_logit), 0.0)
-        e0 = np.exp(pos_logit - m)
-        e1 = np.exp(neg_logit - m)
-        denom = e0 + e1
-        p0 = e0 / denom
-        p1 = e1 / denom
-        loss = -np.mean(np.log(p0 + 1e-12))
-
-        d_lp = (p0 - 1.0) / b
-        d_ln = p1 / b
+        if self.loss_family == "softmax_ce":
+            m = np.maximum(np.maximum(pos_logit, neg_logit), 0.0)
+            e0 = np.exp(pos_logit - m)
+            e1 = np.exp(neg_logit - m)
+            denom = e0 + e1
+            p0 = e0 / denom
+            p1 = e1 / denom
+            loss = -np.mean(np.log(p0 + 1e-12))
+            d_lp = (p0 - 1.0) / b
+            d_ln = p1 / b
+        elif self.loss_family == "sigmoid_bce_weight1":
+            loss = float(
+                np.mean(np.logaddexp(0.0, -pos_logit) + np.logaddexp(0.0, neg_logit))
+            )
+            sig_pos = 1.0 / (1.0 + np.exp(-pos_logit))
+            sig_neg = 1.0 / (1.0 + np.exp(-neg_logit))
+            d_lp = (sig_pos - 1.0) / b
+            d_ln = sig_neg / b
+        else:
+            raise ValueError(f"Unknown loss_family: {self.loss_family!r}")
 
         d_ha = (d_lp[:, None] * hpos + d_ln[:, None] * hneg) / self.tau
         d_hpos = (d_lp[:, None] * ha) / self.tau
@@ -164,4 +175,5 @@ class ContrastiveCriticNumpy:
             "state_dim": self.state_dim,
             "n_actions": self.n_actions,
             "tau": self.tau,
+            "loss_family": self.loss_family,
         }

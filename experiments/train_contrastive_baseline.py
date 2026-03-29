@@ -84,6 +84,16 @@ RESULT_FIELDS = [
     "checkpoint_path",
 ]
 
+DEFAULT_LOSS_FAMILY = "sigmoid_bce_weight1"
+
+
+def _method_name(loss_family: str) -> str:
+    if loss_family == "sigmoid_bce_weight1":
+        return "sigmoid_baseline"
+    if loss_family == "softmax_ce":
+        return "softmax_baseline"
+    raise ValueError(f"Unknown loss_family: {loss_family!r}")
+
 
 def _build_multi_episode_batch(
     *,
@@ -195,6 +205,7 @@ def train_torch(
     num_steps: int | None = None,
     collector_mode: str = TRAIN_COLLECTOR_MODE,
     oracle_epsilon: float = TRAIN_ORACLE_EPSILON,
+    loss_family: str = DEFAULT_LOSS_FAMILY,
     verbose: bool = True,
     save_checkpoint: bool = True,
 ) -> dict[str, Any]:
@@ -245,8 +256,8 @@ def train_torch(
     cfg["collector_mode"] = collector_mode
     cfg["oracle_epsilon"] = oracle_epsilon if collector_mode == "oracle_eps" else None
     cfg["num_train_steps"] = num_steps
-    cfg["method"] = "softmax_baseline"
-    cfg["loss_family"] = "softmax_ce"
+    cfg["method"] = _method_name(loss_family)
+    cfg["loss_family"] = loss_family
     if verbose:
         _print_config_header(format_train_config_lines(cfg))
 
@@ -256,6 +267,7 @@ def train_torch(
         hidden=TRAIN_HIDDEN,
         emb_dim=TRAIN_EMB_DIM,
         tau=TRAIN_TAU,
+        loss_family=loss_family,
     ).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=TRAIN_TORCH_LR)
 
@@ -325,7 +337,7 @@ def train_torch(
         ckpt_path = (
             ROOT
             / "checkpoints"
-            / f"softmax_baseline_seed{seed}_{env_tag}_{collector_tag}.pt"
+            / f"{cfg['method']}_seed{seed}_{env_tag}_{collector_tag}.pt"
         )
         ckpt_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(
@@ -335,8 +347,8 @@ def train_torch(
                 "n_actions": n_actions,
                 "train_device": str(device),
                 "backend": "torch",
-                "method": "softmax_baseline",
-                "loss_family": "softmax_ce",
+                "method": cfg["method"],
+                "loss_family": loss_family,
                 "train_config": cfg,
                 "train_config_json": json.dumps(cfg, default=str),
             },
@@ -359,6 +371,7 @@ def train_numpy(
     num_steps: int | None = None,
     collector_mode: str = TRAIN_COLLECTOR_MODE,
     oracle_epsilon: float = TRAIN_ORACLE_EPSILON,
+    loss_family: str = DEFAULT_LOSS_FAMILY,
     verbose: bool = True,
     save_checkpoint: bool = True,
 ) -> dict[str, Any]:
@@ -408,8 +421,8 @@ def train_numpy(
     cfg["collector_mode"] = collector_mode
     cfg["oracle_epsilon"] = oracle_epsilon if collector_mode == "oracle_eps" else None
     cfg["num_train_steps"] = num_steps
-    cfg["method"] = "softmax_baseline"
-    cfg["loss_family"] = "softmax_ce"
+    cfg["method"] = _method_name(loss_family)
+    cfg["loss_family"] = loss_family
     if verbose:
         _print_config_header(format_train_config_lines(cfg))
 
@@ -420,6 +433,7 @@ def train_numpy(
         emb_dim=TRAIN_EMB_DIM,
         tau=TRAIN_TAU,
         seed=seed,
+        loss_family=loss_family,
     )
 
     losses: list[float] = []
@@ -488,7 +502,7 @@ def train_numpy(
         ckpt_path = (
             ROOT
             / "checkpoints"
-            / f"softmax_baseline_seed{seed}_{env_tag}_{collector_tag}.npz"
+            / f"{cfg['method']}_seed{seed}_{env_tag}_{collector_tag}.npz"
         )
         ckpt_path.parent.mkdir(parents=True, exist_ok=True)
         sd = model.state_dict()
@@ -501,8 +515,8 @@ def train_numpy(
             state_dim=sd["state_dim"],
             n_actions=sd["n_actions"],
             tau=sd["tau"],
-            method=np.array("softmax_baseline"),
-            loss_family=np.array("softmax_ce"),
+            method=np.array(cfg["method"]),
+            loss_family=np.array(loss_family),
             train_config_json=np.array(json.dumps(cfg, default=str)),
         )
         out["checkpoint_path"] = str(ckpt_path)
@@ -515,7 +529,7 @@ def train_numpy(
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Train the softmax contrastive baseline.")
+    p = argparse.ArgumentParser(description="Train the contrastive baseline.")
     p.add_argument("--seed", type=int, default=TRAIN_SEED)
     p.add_argument("--env-id", type=str, default=TRAIN_ENV_ID)
     p.add_argument("--num-episodes", type=int, default=TRAIN_NUM_EPISODES)
@@ -527,6 +541,12 @@ def main() -> None:
         choices=["random", "oracle_eps"],
     )
     p.add_argument("--oracle-epsilon", type=float, default=TRAIN_ORACLE_EPSILON)
+    p.add_argument(
+        "--loss-family",
+        type=str,
+        default=DEFAULT_LOSS_FAMILY,
+        choices=["sigmoid_bce_weight1", "softmax_ce"],
+    )
     p.add_argument(
         "--backend",
         type=str,
@@ -566,6 +586,7 @@ def main() -> None:
         num_steps=args.num_steps,
         collector_mode=args.collector_mode,
         oracle_epsilon=args.oracle_epsilon,
+        loss_family=args.loss_family,
         verbose=not args.quiet,
         save_checkpoint=not args.no_save_checkpoint,
     )

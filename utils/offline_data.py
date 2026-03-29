@@ -45,6 +45,26 @@ def _turn_toward(cur_dir: int, target_dir: int) -> int:
     return int(Actions.left)
 
 
+def _safe_walkable_for_regime(
+    walkable: set[tuple[int, int]],
+    hidden_u: int,
+    env,
+) -> set[tuple[int, int]]:
+    """Return a possibly restricted walkable set based on the hidden regime.
+
+    u=0 (calm): full walkable set — oracle takes the short risky route via x=11.
+    u=1 (windy): remove the x=11 vertical passage (y=6..13) so BFS is forced
+                  through the safe x=3 -> x=7 route.  The final approach cells
+                  (11,5), (12,5), (13,5) stay walkable so the goal is reachable.
+    """
+    if hidden_u == 0:
+        return walkable
+
+    danger_zone = {(11, y) for y in range(6, 14)}
+    restricted = walkable - danger_zone
+    return restricted
+
+
 def _oracle_target_cell(env: gym.Env) -> tuple[int, int]:
     raw = env.unwrapped
     if hasattr(raw, "walkable_cells") and hasattr(raw, "goal_pos"):
@@ -54,7 +74,9 @@ def _oracle_target_cell(env: gym.Env) -> tuple[int, int]:
         goal = goal_attr() if callable(goal_attr) else tuple(int(v) for v in goal_attr)
         if start == goal:
             return start
-        return _shortest_path_next_cell(start, goal, walkable)
+        hidden_u = int(getattr(raw, "hidden_u", 0))
+        effective_walkable = _safe_walkable_for_regime(walkable, hidden_u, raw)
+        return _shortest_path_next_cell(start, goal, effective_walkable)
 
     ax, ay = raw.agent_pos
     cx = raw.width // 2

@@ -36,6 +36,7 @@ def _trace_rollout(
     lookahead_k: int,
     future_window: int,
     alignment_mode: str,
+    goal_bank_mode: str,
     plan_depth: int,
     collision_penalty: float,
     turn_penalty: float,
@@ -49,6 +50,7 @@ def _trace_rollout(
     obs, info = env.reset(seed=seed)
     print(f"[Trace] mode = rollout")
     print(f"[Trace] seed = {seed}")
+    print(f"[Trace] goal_bank_mode = {goal_bank_mode}")
     print(f"[Trace] ref_len = {len(ref_positions)}")
     print(
         f"[Trace] reset pos = {tuple(int(v) for v in env.unwrapped.agent_pos)} "
@@ -69,6 +71,7 @@ def _trace_rollout(
             lookahead_k=lookahead_k,
             future_window=future_window,
             alignment_mode=alignment_mode,
+            goal_bank_mode=goal_bank_mode,
             plan_depth=plan_depth,
             collision_penalty=collision_penalty,
             turn_penalty=turn_penalty,
@@ -100,6 +103,7 @@ def _trace_forced(
     lookahead_k: int,
     future_window: int,
     alignment_mode: str,
+    goal_bank_mode: str,
     plan_depth: int,
     collision_penalty: float,
     turn_penalty: float,
@@ -121,6 +125,7 @@ def _trace_forced(
     print(f"[Trace] fixed_u = {fixed_u}")
     print(f"[Trace] env_seed = {seed}")
     print(f"[Trace] ref_seed = {ref_seed}")
+    print(f"[Trace] goal_bank_mode = {goal_bank_mode}")
     print(f"[Trace] ref_len = {len(ref_positions)}")
     print(
         f"[Trace] reset pos = {tuple(int(v) for v in env.unwrapped.agent_pos)} "
@@ -141,6 +146,7 @@ def _trace_forced(
             lookahead_k=lookahead_k,
             future_window=future_window,
             alignment_mode=alignment_mode,
+            goal_bank_mode=goal_bank_mode,
             plan_depth=plan_depth,
             collision_penalty=collision_penalty,
             turn_penalty=turn_penalty,
@@ -176,6 +182,12 @@ def main() -> None:
     parser.add_argument("--lookahead-k", type=int, default=4)
     parser.add_argument("--future-window", type=int, default=2)
     parser.add_argument("--alignment-mode", type=str, default="time", choices=["time", "nearest"])
+    parser.add_argument(
+        "--goal-bank-mode",
+        type=str,
+        default="waypoint",
+        choices=["waypoint", "final_only"],
+    )
     parser.add_argument("--plan-depth", type=int, default=2)
     parser.add_argument("--collision-penalty", type=float, default=2.0)
     parser.add_argument("--turn-penalty", type=float, default=0.05)
@@ -193,6 +205,7 @@ def main() -> None:
             lookahead_k=args.lookahead_k,
             future_window=args.future_window,
             alignment_mode=args.alignment_mode,
+            goal_bank_mode=args.goal_bank_mode,
             plan_depth=args.plan_depth,
             collision_penalty=args.collision_penalty,
             turn_penalty=args.turn_penalty,
@@ -209,6 +222,7 @@ def main() -> None:
             lookahead_k=args.lookahead_k,
             future_window=args.future_window,
             alignment_mode=args.alignment_mode,
+            goal_bank_mode=args.goal_bank_mode,
             plan_depth=args.plan_depth,
             collision_penalty=args.collision_penalty,
             turn_penalty=args.turn_penalty,

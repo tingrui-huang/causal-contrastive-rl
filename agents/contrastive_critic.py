@@ -26,11 +26,13 @@ class ContrastiveCritic(nn.Module):
         hidden: int = 128,
         emb_dim: int = 64,
         tau: float = 0.07,
+        loss_family: str = "sigmoid_bce_weight1",
     ) -> None:
         super().__init__()
         self.state_dim = state_dim
         self.n_actions = n_actions
         self.tau = tau
+        self.loss_family = loss_family
         in_dim = state_dim + n_actions
         self.encoder = nn.Sequential(
             nn.Linear(in_dim, hidden),
@@ -71,6 +73,16 @@ class ContrastiveCritic(nn.Module):
         Returns scalar loss (mean over batch).
         """
         pos_logit, neg_logit = self.logits(s, a, s_pos, s_neg)
-        logits2 = torch.stack([pos_logit, neg_logit], dim=1)
-        target = torch.zeros(logits2.size(0), dtype=torch.long, device=logits2.device)
-        return F.cross_entropy(logits2, target)
+        if self.loss_family == "softmax_ce":
+            logits2 = torch.stack([pos_logit, neg_logit], dim=1)
+            target = torch.zeros(logits2.size(0), dtype=torch.long, device=logits2.device)
+            return F.cross_entropy(logits2, target)
+        if self.loss_family == "sigmoid_bce_weight1":
+            pos_loss = F.binary_cross_entropy_with_logits(
+                pos_logit, torch.ones_like(pos_logit)
+            )
+            neg_loss = F.binary_cross_entropy_with_logits(
+                neg_logit, torch.zeros_like(neg_logit)
+            )
+            return pos_loss + neg_loss
+        raise ValueError(f"Unknown loss_family: {self.loss_family!r}")

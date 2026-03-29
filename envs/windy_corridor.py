@@ -26,7 +26,7 @@ from minigrid.minigrid_env import MiniGridEnv
 WindDistLike = dict[int, tuple[float, ...]] | Callable[[int, tuple[int, int]], tuple[float, ...]]
 
 _DEFAULT_SHELTERED_WIND_DIST: dict[int, tuple[float, ...]] = {
-    0: (0.05, 0.05, 0.05, 0.05, 0.80),
+    0: (0.00, 0.00, 0.00, 0.00, 1.00),
     1: (0.20, 0.20, 0.05, 0.05, 0.50),
 }
 
@@ -126,19 +126,19 @@ class WindyCorridorEnv(MiniGridEnv):
         x, y = pos
         if x >= 8 and y == 13:
             exposed = {
-                0: (0.10, 0.05, 0.05, 0.05, 0.75),
+                0: (0.00, 0.00, 0.00, 0.00, 1.00),
                 1: (0.55, 0.10, 0.05, 0.05, 0.25),
             }
             return exposed[u]
         if x == 11 and 6 <= y <= 13:
             exposed = {
-                0: (0.10, 0.05, 0.05, 0.10, 0.70),
+                0: (0.00, 0.00, 0.00, 0.00, 1.00),
                 1: (0.55, 0.10, 0.05, 0.05, 0.25),
             }
             return exposed[u]
         if (x, y) in {(12, 5), (13, 5)}:
             exposed = {
-                0: (0.10, 0.05, 0.05, 0.05, 0.75),
+                0: (0.00, 0.00, 0.00, 0.00, 1.00),
                 1: (0.50, 0.05, 0.05, 0.05, 0.35),
             }
             return exposed[u]
