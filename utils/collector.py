@@ -8,6 +8,7 @@ def rollout_episode(env, policy_fn, max_steps=100, seed=None):
 
     for t in range(max_steps):
         action = policy_fn(obs)
+        prev_info = info
         next_obs, reward, terminated, truncated, info = env.step(action)
 
         trajectory.append({
@@ -16,6 +17,8 @@ def rollout_episode(env, policy_fn, max_steps=100, seed=None):
             "reward": reward,
             "next_obs": next_obs,
             "done": terminated or truncated,
+            "info": prev_info,
+            "next_info": info,
         })
 
         obs = next_obs

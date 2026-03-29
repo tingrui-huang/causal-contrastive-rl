@@ -59,6 +59,7 @@ from configs.training_defaults import (
     format_train_config_lines,
 )
 from utils.offline_data import collect_episodes
+from utils.preprocess import extract_state_oracle
 
 if _TORCH_AVAILABLE:
     from agents.contrastive_critic import ContrastiveCritic
@@ -87,12 +88,14 @@ RESULT_FIELDS = [
 DEFAULT_LOSS_FAMILY = "sigmoid_bce_weight1"
 
 
-def _method_name(loss_family: str) -> str:
+def _method_name(loss_family: str, oracle_state: bool = False) -> str:
     if loss_family == "sigmoid_bce_weight1":
-        return "sigmoid_baseline"
-    if loss_family == "softmax_ce":
-        return "softmax_baseline"
-    raise ValueError(f"Unknown loss_family: {loss_family!r}")
+        base = "sigmoid_oracle" if oracle_state else "sigmoid_baseline"
+    elif loss_family == "softmax_ce":
+        base = "softmax_oracle" if oracle_state else "softmax_baseline"
+    else:
+        raise ValueError(f"Unknown loss_family: {loss_family!r}")
+    return base
 
 
 def _build_multi_episode_batch(
@@ -105,6 +108,8 @@ def _build_multi_episode_batch(
     k: int,
     batch_size: int,
     rng: np.random.Generator,
+    episode_regimes: list[int] | None = None,
+    regime_buffers: dict[int, ReplayBuffer] | None = None,
 ) -> dict[str, np.ndarray]:
     anchor_ids = rng.integers(low=0, high=len(valid_anchors), size=batch_size)
     anchor_pairs = [valid_anchors[int(i)] for i in anchor_ids]
@@ -118,9 +123,14 @@ def _build_multi_episode_batch(
         [episode_states[ep_idx][t + k] for ep_idx, t in anchor_pairs], axis=0
     ).astype(np.float32, copy=False)
 
+    use_regime_neg = (episode_regimes is not None and regime_buffers is not None)
     s_neg_batch = np.empty((batch_size, state_dim), dtype=np.float32)
-    for i in range(batch_size):
-        neg_item = buffer.sample(1)[0]
+    for i, (ep_idx, _t) in enumerate(anchor_pairs):
+        if use_regime_neg:
+            regime = episode_regimes[ep_idx]
+            neg_item = regime_buffers[regime].sample(1)[0]
+        else:
+            neg_item = buffer.sample(1)[0]
         s_neg_batch[i] = np.asarray(neg_item["state"], dtype=np.float32)
 
     return {
@@ -206,6 +216,7 @@ def train_torch(
     collector_mode: str = TRAIN_COLLECTOR_MODE,
     oracle_epsilon: float = TRAIN_ORACLE_EPSILON,
     loss_family: str = DEFAULT_LOSS_FAMILY,
+    oracle_state: bool = False,
     verbose: bool = True,
     save_checkpoint: bool = True,
 ) -> dict[str, Any]:
@@ -221,6 +232,7 @@ def train_torch(
     if verbose:
         print(f"Using backend: PyTorch  device={device}")
 
+    state_fn = extract_state_oracle if oracle_state else None
     (
         trajectories,
         episode_states,
@@ -232,6 +244,8 @@ def train_torch(
         total_steps,
         k,
         rng,
+        episode_regimes,
+        regime_buffers,
     ) = collect_episodes(
         seed=seed,
         env_id=env_id,
@@ -240,6 +254,7 @@ def train_torch(
         collector_mode=collector_mode,
         oracle_epsilon=oracle_epsilon,
         max_episode_steps=TRAIN_MAX_EPISODE_STEPS,
+        state_fn=state_fn,
     )
 
     batch_size = min(32, len(valid_anchors))
@@ -256,8 +271,9 @@ def train_torch(
     cfg["collector_mode"] = collector_mode
     cfg["oracle_epsilon"] = oracle_epsilon if collector_mode == "oracle_eps" else None
     cfg["num_train_steps"] = num_steps
-    cfg["method"] = _method_name(loss_family)
+    cfg["method"] = _method_name(loss_family, oracle_state)
     cfg["loss_family"] = loss_family
+    cfg["oracle_state"] = oracle_state
     if verbose:
         _print_config_header(format_train_config_lines(cfg))
 
@@ -287,6 +303,8 @@ def train_torch(
             k=k,
             batch_size=batch_size,
             rng=rng,
+            episode_regimes=episode_regimes if oracle_state else None,
+            regime_buffers=regime_buffers if oracle_state else None,
         )
         s = torch.from_numpy(batch["s"]).float().to(device)
         a = torch.from_numpy(batch["a"]).long().to(device)
@@ -372,6 +390,7 @@ def train_numpy(
     collector_mode: str = TRAIN_COLLECTOR_MODE,
     oracle_epsilon: float = TRAIN_ORACLE_EPSILON,
     loss_family: str = DEFAULT_LOSS_FAMILY,
+    oracle_state: bool = False,
     verbose: bool = True,
     save_checkpoint: bool = True,
 ) -> dict[str, Any]:
@@ -386,6 +405,7 @@ def train_numpy(
             "(e.g. torch_cuda.dll / WinError 127). Training still runs without fixing PyTorch."
         )
 
+    state_fn = extract_state_oracle if oracle_state else None
     (
         trajectories,
         episode_states,
@@ -397,6 +417,8 @@ def train_numpy(
         total_steps,
         k,
         rng,
+        episode_regimes,
+        regime_buffers,
     ) = collect_episodes(
         seed=seed,
         env_id=env_id,
@@ -405,6 +427,7 @@ def train_numpy(
         collector_mode=collector_mode,
         oracle_epsilon=oracle_epsilon,
         max_episode_steps=TRAIN_MAX_EPISODE_STEPS,
+        state_fn=state_fn,
     )
 
     batch_size = min(32, len(valid_anchors))
@@ -421,8 +444,9 @@ def train_numpy(
     cfg["collector_mode"] = collector_mode
     cfg["oracle_epsilon"] = oracle_epsilon if collector_mode == "oracle_eps" else None
     cfg["num_train_steps"] = num_steps
-    cfg["method"] = _method_name(loss_family)
+    cfg["method"] = _method_name(loss_family, oracle_state)
     cfg["loss_family"] = loss_family
+    cfg["oracle_state"] = oracle_state
     if verbose:
         _print_config_header(format_train_config_lines(cfg))
 
@@ -451,6 +475,8 @@ def train_numpy(
             k=k,
             batch_size=batch_size,
             rng=rng,
+            episode_regimes=episode_regimes if oracle_state else None,
+            regime_buffers=regime_buffers if oracle_state else None,
         )
         loss, grads = model.loss_and_grads(
             batch["s"],
@@ -572,6 +598,11 @@ def main() -> None:
         help="Print summary CSV to stdout only; do not write a result file",
     )
     p.add_argument("--quiet", action="store_true", help="Disable per-step printing")
+    p.add_argument(
+        "--oracle-state",
+        action="store_true",
+        help="Expose hidden_u in state vector (oracle upper bound)",
+    )
     args = p.parse_args()
 
     use_torch = _TORCH_AVAILABLE if args.backend == "auto" else args.backend == "torch"
@@ -587,6 +618,7 @@ def main() -> None:
         collector_mode=args.collector_mode,
         oracle_epsilon=args.oracle_epsilon,
         loss_family=args.loss_family,
+        oracle_state=args.oracle_state,
         verbose=not args.quiet,
         save_checkpoint=not args.no_save_checkpoint,
     )

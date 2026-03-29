@@ -115,6 +115,8 @@ def train_numpy_robust_v1(
         total_steps,
         k,
         rng,
+        _episode_regimes,
+        _regime_buffers,
     ) = collect_episodes(
         seed=seed,
         env_id=env_id,

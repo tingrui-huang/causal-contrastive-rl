@@ -11,7 +11,7 @@ from buffers.replay_buffer import ReplayBuffer
 from configs.training_defaults import TRAIN_MAX_EPISODE_STEPS, TRAIN_REPLAY_CAPACITY
 from utils.collector import rollout_episode
 from utils.contrastive_sampling import DEFAULT_K
-from utils.preprocess import extract_state
+from utils.preprocess import extract_state, extract_state_oracle, get_u_from_info
 
 
 def build_random_policy(env: gym.Env):
@@ -176,10 +176,11 @@ def build_policy(
     raise ValueError(f"Unknown collector_mode: {collector_mode!r}")
 
 
-def processed_transition(trans: dict) -> dict:
+def processed_transition(trans: dict, *, state_fn=None) -> dict:
+    fn = state_fn or extract_state
     return {
-        "state": extract_state(trans["obs"]),
-        "next_state": extract_state(trans["next_obs"]),
+        "state": fn(trans["obs"], trans.get("info")),
+        "next_state": fn(trans["next_obs"], trans.get("next_info")),
         "action": trans["action"],
         "reward": trans["reward"],
         "done": trans["done"],
@@ -196,14 +197,18 @@ def collect_episodes(
     oracle_epsilon: float,
     max_episode_steps: int = TRAIN_MAX_EPISODE_STEPS,
     replay_capacity: int = TRAIN_REPLAY_CAPACITY,
+    state_fn=None,
 ):
     """Roll out multiple episodes; positives stay within-episode, negatives use a global buffer."""
+    fn = state_fn or extract_state
     rng = np.random.default_rng(seed)
     buffer = ReplayBuffer(capacity=replay_capacity, seed=seed)
+    regime_buffers: dict[int, ReplayBuffer] = {}
     k = DEFAULT_K
     trajectories: list[list[dict]] = []
     episode_states: list[np.ndarray] = []
     episode_actions: list[np.ndarray] = []
+    episode_regimes: list[int] = []
     valid_anchors: list[tuple[int, int]] = []
     n_actions: int | None = None
     state_dim: int | None = None
@@ -228,10 +233,20 @@ def collect_episodes(
         )
         trajectories.append(trajectory)
 
-        for trans in trajectory:
-            buffer.add(processed_transition(trans))
+        ep_regime = int(getattr(env.unwrapped, "hidden_u", 0))
+        episode_regimes.append(ep_regime)
 
-        states = np.stack([extract_state(tr["obs"]) for tr in trajectory], axis=0)
+        if ep_regime not in regime_buffers:
+            regime_buffers[ep_regime] = ReplayBuffer(capacity=replay_capacity, seed=seed + ep_regime)
+
+        for trans in trajectory:
+            pt = processed_transition(trans, state_fn=fn)
+            buffer.add(pt)
+            regime_buffers[ep_regime].add(pt)
+
+        states = np.stack(
+            [fn(tr["obs"], tr.get("info")) for tr in trajectory], axis=0
+        )
         actions = np.array([tr["action"] for tr in trajectory], dtype=np.int64)
         episode_states.append(states)
         episode_actions.append(actions)
@@ -262,4 +277,6 @@ def collect_episodes(
         total_steps,
         k,
         rng,
+        episode_regimes,
+        regime_buffers,
     )

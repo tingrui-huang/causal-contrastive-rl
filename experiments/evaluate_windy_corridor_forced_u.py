@@ -32,7 +32,7 @@ if str(ROOT) not in sys.path:
 import envs  # noqa: F401
 
 from agents.contrastive_critic_numpy import ContrastiveCriticNumpy
-from utils.preprocess import extract_state
+from utils.preprocess import extract_state, extract_state_oracle
 
 ACTION_IDS = [int(Actions.left), int(Actions.right), int(Actions.forward)]
 CSV_FIELDS = [
@@ -159,19 +159,21 @@ def _reference_trajectory_from_fixed_u(
     env_id: str,
     fixed_u: int,
     seed: int,
+    state_fn=None,
 ) -> tuple[np.ndarray, list[tuple[int, int]]]:
+    fn = state_fn or extract_state
     env = gym.make(env_id, render_mode="rgb_array", fixed_u=fixed_u, wind_strength=0.0)
     goal = _goal_pos(env.unwrapped)
 
-    obs, _ = env.reset(seed=seed)
-    states = [extract_state(obs)]
+    obs, info = env.reset(seed=seed)
+    states = [fn(obs, info)]
     positions = [tuple(int(v) for v in env.unwrapped.agent_pos)]
     for _ in range(env.unwrapped.max_steps):
         action = _safe_reference_action(env)
         if action == int(Actions.done):
             break
-        next_obs, _, terminated, truncated, _ = env.step(action)
-        states.append(extract_state(next_obs))
+        next_obs, _, terminated, truncated, info = env.step(action)
+        states.append(fn(next_obs, info))
         positions.append(tuple(int(v) for v in env.unwrapped.agent_pos))
         obs = next_obs
         if terminated or truncated:
@@ -275,8 +277,11 @@ def _plan_action(
     progress_bonus: float,
     success_bonus: float,
     fatal_penalty: float,
+    state_fn=None,
 ) -> int:
-    state = extract_state(obs).astype(np.float64, copy=False)
+    fn = state_fn or extract_state
+    info = {"confounder": int(getattr(env.unwrapped, "hidden_u", 0))}
+    state = fn(obs, info).astype(np.float64, copy=False)
     best_value = -np.inf
     best_action = ACTION_IDS[0]
 
@@ -289,7 +294,8 @@ def _plan_action(
             for depth_idx, seq_action in enumerate(seq):
                 sim_raw_before = sim_env.unwrapped
                 pos_before = tuple(int(v) for v in sim_raw_before.agent_pos)
-                sim_state = extract_state(sim_obs).astype(np.float64, copy=False)
+                sim_info = {"confounder": int(getattr(sim_raw_before, "hidden_u", 0))}
+                sim_state = fn(sim_obs, sim_info).astype(np.float64, copy=False)
                 sim_ref_idx = _reference_index(
                     step_idx=step_idx + depth_idx,
                     state=sim_state,
@@ -366,6 +372,7 @@ def _run_regime(
     progress_bonus: float,
     success_bonus: float,
     fatal_penalty: float,
+    state_fn=None,
 ) -> float:
     successes = 0
     for ep in range(episodes):
@@ -392,6 +399,7 @@ def _run_regime(
                 progress_bonus=progress_bonus,
                 success_bonus=success_bonus,
                 fatal_penalty=fatal_penalty,
+                state_fn=state_fn,
             )
             obs, reward, terminated, truncated, _ = env.step(best_action)
             done = terminated or truncated
@@ -419,15 +427,19 @@ def evaluate_checkpoint(
     fatal_penalty: float,
 ) -> dict[str, Any]:
     model, cfg = _load_numpy_checkpoint(checkpoint)
+    is_oracle = cfg.get("oracle_state", False)
+    state_fn = extract_state_oracle if is_oracle else None
     ref_states_u0, ref_positions_u0 = _reference_trajectory_from_fixed_u(
         env_id=eval_env_id,
         fixed_u=0,
         seed=int(cfg.get("seed", 0)),
+        state_fn=state_fn,
     )
     ref_states_u1, ref_positions_u1 = _reference_trajectory_from_fixed_u(
         env_id=eval_env_id,
         fixed_u=1,
         seed=int(cfg.get("seed", 0)),
+        state_fn=state_fn,
     )
 
     success_u0 = _run_regime(
@@ -447,6 +459,7 @@ def evaluate_checkpoint(
         progress_bonus=progress_bonus,
         success_bonus=success_bonus,
         fatal_penalty=fatal_penalty,
+        state_fn=state_fn,
     )
     success_u1 = _run_regime(
         model=model,
@@ -465,6 +478,7 @@ def evaluate_checkpoint(
         progress_bonus=progress_bonus,
         success_bonus=success_bonus,
         fatal_penalty=fatal_penalty,
+        state_fn=state_fn,
     )
     mean_success = 0.5 * (success_u0 + success_u1)
     worst_case_success = min(success_u0, success_u1)
