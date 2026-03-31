@@ -1,2 +1,2 @@
 checkpoint,eval_env_id,success_u0,success_u1,mean_success,worst_case_success,regime_gap
-checkpoints\actor_critic_confounded_seed0_CausalContrastive_WindyCorridor_15x15_Lethal_v0_oracle_eps.npz,CausalContrastive-WindyCorridor-15x15-Lethal-v0,1.0,0.44,0.72,0.44,0.56
+D:\Users\trhua\Research\causal-contrastive-rl\checkpoints\actor_critic_confounded_seed0_CausalContrastive_WindyCorridor_15x15_Lethal_v0_oracle_eps.npz,CausalContrastive-WindyCorridor-15x15-Lethal-v0,1.0,0.44,0.72,0.44,0.56
