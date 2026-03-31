@@ -62,10 +62,43 @@ $$
 | Variant | Formula | Pros | Cons |
 |---------|---------|------|------|
 | **min-neg** | $\min_{s_{neg} \in \mathcal{B}_{neg}} \phi(s,a)^T \psi(s_{neg})$ | Data-driven, adapts to representation | Requires negative sampling |
-| **constant-penalty** | $-M$ (fixed large negative) | Simple, no extra computation | Hyperparameter $M$; ignores representation |
+| **constant-penalty** | $c_{batch}$ where $c_{batch} < \min(\text{critic\_scores})$ | Simple, no extra min-over-neg loop | If too negative, actor can collapse toward BC |
 
 Both variants will be implemented. The **min-neg** variant is the primary method; the
 **constant-penalty** variant is an ablation.
+
+### 0.5 Constant-Penalty Degeneration Risk (STRICT)
+
+An overly negative constant penalty can make every counterfactual action effectively
+impossible under the actor softmax. If the critic's normal score range is, for example,
+roughly `[-2, 2]`, then using a fixed penalty like `-10` creates a near-zero probability
+for all non-observed actions. In that regime, the policy update degenerates toward pure
+behavioral cloning:
+
+```text
+all a != a_obs are crushed  →  π(a|s,sg) collapses toward a_obs  →  regime_gap may shrink
+for the wrong reason while mean_success also drops.
+```
+
+Therefore, the constant variant MUST be treated as a **calibrated batch-relative penalty**,
+not as an unconditional hard-coded `-10.0` in the main experiment.
+
+**Required rule (STRICT):**
+
+```python
+score_min = np.min(critic_scores)
+effective_constant_penalty = score_min - constant_M
+```
+
+where `constant_M` is interpreted as a **margin below the current batch minimum critic
+score**, not as the final penalty value itself.
+
+**Default interpretation:**
+
+- `constant_M = 2.0` means "penalize counterfactual actions to a value 2.0 below the
+  current batch minimum critic score."
+- A fixed absolute penalty such as `-10.0` is allowed only as an explicitly labeled
+  **extreme ablation**, not as the default constant-mode setting.
 
 ---
 
@@ -100,7 +133,15 @@ All principles from `DEV_SPEC.md` §2 apply. Additional rules for this phase:
 | **Critic is frozen during actor training** | Gradients MUST NOT flow through $\phi$ or $\psi$ when computing actor loss. |
 | **Same offline dataset** | The causal-pessimistic actor MUST be trained on the exact same offline episodes as the baseline. Use the same `collect_episodes()` call with identical parameters. |
 | **Same evaluation** | Use the same `evaluate_actor_forced_u.py` with identical settings. |
+| **Same actor objective except for Q replacement** | The baseline already uses the same advantage-plus-BC structure with `lam=0.5`. The causal variant may ONLY replace `critic_scores` with `Q_pessimistic`; it MUST NOT introduce an extra BC term or change the loss form. |
 | **Explicit variant labeling** | Every checkpoint, CSV row, and log line must identify the method as `causal_pessimistic_min_neg` or `causal_pessimistic_constant_M`. |
+
+**Verified baseline alignment from current codebase (do not change this without updating the protocol):**
+
+- `experiments/train_actor_critic.py` uses `lam=0.5` by default for the baseline actor.
+- `agents/goal_conditioned_actor_numpy.py` already implements the BC-regularized actor loss.
+- Therefore, fairness requires the causal actor to keep the same `lam` semantics and only
+  swap the scoring term from `critic_scores` to `Q_pessimistic`.
 
 ---
 
@@ -157,7 +198,7 @@ class CausalPessimisticActorNumpy:
         hidden: int = 128,
         seed: int = 0,
         pessimism_mode: str = "min_neg",  # {"min_neg", "constant"}
-        constant_M: float = 10.0,
+        constant_M: float = 2.0,
     ) -> None:
 ```
 
@@ -197,7 +238,8 @@ def loss_and_grads(
 #           h_neg = psi_fn(neg_goals)                     # (N, emb_dim)
 #           Q_pessimistic[i, a_j] = min(h_sa @ h_neg.T)  # scalar
 #       elif pessimism_mode == "constant":
-#           Q_pessimistic[i, a_j] = -constant_M
+#           score_min = np.min(critic_scores[i])
+#           Q_pessimistic[i, a_j] = score_min - constant_M
 ```
 
 **Actor loss (same structure as baseline, but using pessimistic Q):**
@@ -213,6 +255,9 @@ $$\mathcal{L}_{Actor}(\theta) = -(1-\lambda) \cdot \mathbb{E}\left[\sum_a \pi_\t
   in the baseline). Only the actor's softmax probabilities have gradients.
 - The gradient computation for the actor MLP is identical to `GoalConditionedActorNumpy`
   — only the `critic_scores` input is replaced by `Q_pessimistic`.
+- In `constant` mode, the implementation MUST compute a batch-relative penalty from the
+  current critic score distribution; a hard-coded absolute `-10.0` is forbidden in the
+  mainline implementation.
 
 **Verification command:**
 
@@ -255,7 +300,7 @@ setting.
 5. Compute pessimistic Q for all actions.
 6. **Verify:** For `a_obs` actions, pessimistic Q equals critic score exactly.
 7. **Verify:** For non-`a_obs` actions, pessimistic Q ≤ critic score (pessimism).
-8. **Verify (constant mode):** For non-`a_obs` actions, pessimistic Q = -M exactly.
+8. **Verify (constant mode):** For non-`a_obs` actions, pessimistic Q = `min(critic_scores[i]) - constant_M` exactly.
 
 **Required logging (exact prefixes):**
 
@@ -265,6 +310,7 @@ setting.
 [Phase9.2] observed_action_match = <bool>
 [Phase9.2] counterfactual_pessimism = <bool>
 [Phase9.2] constant_mode_exact = <bool>
+[Phase9.2] pessimism_gap = <float>
 [Phase9.2] PASS
 ```
 
@@ -305,7 +351,7 @@ pessimistic actor on the same offline data as the baseline.
 ```python
 # Causal pessimistic training
 TRAIN_PESSIMISM_MODE = "min_neg"    # {"min_neg", "constant"}
-TRAIN_CONSTANT_M = 10.0             # only used when mode = "constant"
+TRAIN_CONSTANT_M = 2.0              # margin below current batch min critic score
 TRAIN_NEG_GOALS_N = 16              # number of negative goals for min-neg
 ```
 
@@ -315,6 +361,18 @@ TRAIN_NEG_GOALS_N = 16              # number of negative goals for min-neg
 - These are **goal states** for the pessimistic lower bound, NOT the in-batch negatives
   used by the critic.
 - Sampling happens **per training step** (fresh negatives each step).
+
+**Constant-mode calibration rule (STRICT):**
+
+- In `constant` mode, compute the effective penalty from the current batch:
+
+```python
+score_min = np.min(critic_scores, axis=1, keepdims=True)
+effective_constant_penalty = score_min - constant_M
+```
+
+- `constant_M` is therefore a **relative margin hyperparameter**, not an absolute logit.
+- The training loop MUST log critic score statistics so the calibration remains inspectable.
 
 **Passing phi_fn and psi_fn to the actor:**
 
@@ -342,8 +400,27 @@ def psi_fn(goals):
 [CausalPessimistic] neg_goals_N=<int>  constant_M=<float>
 [CausalPessimistic] twin_critics=True  loss=inbatch_sigmoid_bce
 [CausalPessimistic] state_dim=<int>  n_actions=<int>  total_transitions=<int>  batch=<int>  γ=<float>
+[CausalPessimistic] critic_score_min=<float>  critic_score_mean=<float>  critic_score_max=<float>
+[CausalPessimistic] pessimism_gap=<float>
 [Step <int>] critic_loss=<float>  margin=<float>  actor_loss=<float>  bc_acc=<float>
 ```
+
+**Definition of `pessimism_gap` (STRICT):**
+
+```python
+counterfactual_mask = np.ones_like(critic_scores, dtype=bool)
+counterfactual_mask[np.arange(B), a_obs] = False
+pessimism_gap = np.mean(critic_scores[counterfactual_mask]) - np.mean(
+    Q_pessimistic[counterfactual_mask]
+)
+```
+
+Interpretation:
+
+- `pessimism_gap ≈ 0` for many steps → likely implementation bug or no effective penalty
+- very large `pessimism_gap` together with low `mean_success` / collapsed action entropy
+  → likely over-penalization
+- moderate positive `pessimism_gap` → the intended "causal haircut" on counterfactual optimism
 
 **Checkpoint format:**
 
@@ -379,7 +456,7 @@ python experiments/train_causal_pessimistic.py --num-steps 500 --num-episodes 5
 ```python
 # Add these lines:
 TRAIN_PESSIMISM_MODE = "min_neg"
-TRAIN_CONSTANT_M = 10.0
+TRAIN_CONSTANT_M = 2.0
 TRAIN_NEG_GOALS_N = 16
 
 EVAL_CAUSAL_PESSIMISTIC_CHECKPOINT = "checkpoints/causal_pessimistic_min_neg_seed0_<env_tag>.npz"
@@ -524,7 +601,7 @@ python experiments/run.py
 | Parameter | Default | Rationale |
 |-----------|---------|-----------|
 | `pessimism_mode` | `"min_neg"` | Primary method; data-driven pessimism |
-| `constant_M` | `10.0` | Large enough to make counterfactual actions unattractive |
+| `constant_M` | `2.0` | Relative margin below current batch minimum critic score; intended to be cautious, not catastrophic |
 | `neg_goals_N` | `16` | Matches `ROBUST_V1_M`; enough for stable min estimate |
 | `lam` | `0.5` | Same as baseline; BC regularization prevents collapse |
 | `critic_warmup` | `2000` | Same as baseline; critic must converge before actor uses it |
@@ -594,6 +671,8 @@ Every new module MUST:
 - Print at least one concrete sample value (e.g., pessimistic Q for first batch element).
 - Never silently return `None` where an array is expected.
 - Log the number of counterfactual actions penalized per batch (diagnostic).
+- Log `critic_score_min`, `critic_score_mean`, `critic_score_max`, and `pessimism_gap`
+  during training so over-penalization is visible immediately.
 
 ---
 
