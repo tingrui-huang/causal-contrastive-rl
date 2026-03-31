@@ -16,9 +16,11 @@ EVAL_TEMPERATURE = 1.0      # 动作采样温度（1.0=正常, 越低越贪心�
 
 EVAL_CONFOUNDED_CHECKPOINT = "checkpoints/actor_critic_confounded_seed0_CausalContrastive_WindyCorridor_15x15_Lethal_v0_oracle_eps.npz"
 EVAL_ORACLE_CHECKPOINT     = "checkpoints/actor_critic_oracle_seed0_CausalContrastive_WindyCorridor_15x15_Lethal_v0_oracle_eps.npz"
+EVAL_CAUSAL_PESSIMISTIC_CHECKPOINT = "checkpoints/causal_pessimistic_min_neg_seed0_CausalContrastive_WindyCorridor_15x15_Lethal_v0_oracle_eps.npz"
 
 EVAL_CONFOUNDED_OUTPUT = "results/actor_confounded_forced_u.csv"
 EVAL_ORACLE_OUTPUT     = "results/actor_oracle_forced_u.csv"
+EVAL_CAUSAL_PESSIMISTIC_OUTPUT = "results/actor_causal_pessimistic_forced_u.csv"
 
 # ─────────────────────────────────────────────
 # 训练参数
@@ -33,3 +35,6 @@ TRAIN_CRITIC_LR    = 0.002
 TRAIN_ACTOR_LR     = 0.002
 TRAIN_CRITIC_WARMUP = 2000   # 先只训 critic 多少步，再开始训 actor
 TRAIN_ORACLE_EPSILON = 0.2   # 数据收集时随机探索概率
+TRAIN_PESSIMISM_MODE = "min_neg"   # {"min_neg", "constant"}
+TRAIN_CONSTANT_M = 2.0             # 相对当前 batch 最小 critic score 再往下压多少
+TRAIN_NEG_GOALS_N = 16             # 悲观 min-neg 模式下采样多少个负 goal

@@ -42,7 +42,7 @@ $$
 \underline{Q}(s, a, s_g) =
 \begin{cases}
 \phi(s, a)^T \psi(s_g) & \text{if } a = a_{obs} \\
-\min_{s_{neg} \in \mathcal{B}_{neg}} \phi(s, a)^T \psi(s_{neg}) & \text{if } a \neq a_{obs}
+\min\left(\phi(s, a)^T \psi(s_g), \min_{s_{neg} \in \mathcal{B}_{neg}} \phi(s, a)^T \psi(s_{neg})\right) & \text{if } a \neq a_{obs}
 \end{cases}
 $$
 
@@ -234,9 +234,10 @@ def loss_and_grads(
 #       Q_pessimistic[i, a_j] = critic_scores[i, a_j]   (trust the critic)
 #   else:
 #       if pessimism_mode == "min_neg":
-#           h_sa = phi_fn(state[i:i+1], a_j)             # (1, emb_dim)
-#           h_neg = psi_fn(neg_goals)                     # (N, emb_dim)
-#           Q_pessimistic[i, a_j] = min(h_sa @ h_neg.T)  # scalar
+#           h_sa = phi_fn(state[i:i+1], a_j)                         # (1, emb_dim)
+#           h_neg = psi_fn(neg_goals)                                 # (N, emb_dim)
+#           neg_lb = min(score_scale * (h_sa @ h_neg.T))              # scalar
+#           Q_pessimistic[i, a_j] = min(critic_scores[i, a_j], neg_lb)
 #       elif pessimism_mode == "constant":
 #           score_min = np.min(critic_scores[i])
 #           Q_pessimistic[i, a_j] = score_min - constant_M
@@ -255,6 +256,8 @@ $$\mathcal{L}_{Actor}(\theta) = -(1-\lambda) \cdot \mathbb{E}\left[\sum_a \pi_\t
   in the baseline). Only the actor's softmax probabilities have gradients.
 - The gradient computation for the actor MLP is identical to `GoalConditionedActorNumpy`
   — only the `critic_scores` input is replaced by `Q_pessimistic`.
+- `min_neg` mode MUST use the same score scale as the critic (for the current codebase,
+  this means matching the critic's `/ tau` convention). An unscaled dot product is invalid.
 - In `constant` mode, the implementation MUST compute a batch-relative penalty from the
   current critic score distribution; a hard-coded absolute `-10.0` is forbidden in the
   mainline implementation.

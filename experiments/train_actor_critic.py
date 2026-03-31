@@ -122,6 +122,7 @@ def train(
     critic_lr: float = TRAIN_NUMPY_LR,
     actor_lr: float = TRAIN_NUMPY_LR,
     critic_warmup: int = 1000,
+    checkpoint_tag: str | None = None,
     verbose: bool = True,
     save_checkpoint: bool = True,
 ) -> dict[str, Any]:
@@ -257,9 +258,13 @@ def train(
     if save_checkpoint:
         env_tag = env_id.replace("/", "_").replace("\\", "_").replace(":", "").replace("-", "_")
         collector_tag = collector_mode.replace("-", "_")
+        auto_tag = checkpoint_tag
+        if auto_tag is None and (num_steps < 1000 or num_episodes < 10):
+            auto_tag = f"smoke_steps{num_steps}_eps{num_episodes}"
+        suffix = f"_{auto_tag}" if auto_tag else ""
         ckpt_path = (
             ROOT / "checkpoints"
-            / f"{tag}_seed{seed}_{env_tag}_{collector_tag}.npz"
+            / f"{tag}_seed{seed}_{env_tag}_{collector_tag}{suffix}.npz"
         )
         ckpt_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -272,6 +277,7 @@ def train(
             "critic_lr": critic_lr, "actor_lr": actor_lr,
             "hidden": TRAIN_HIDDEN, "emb_dim": TRAIN_EMB_DIM, "tau": TRAIN_TAU,
             "method": tag, "has_actor": True, "twin_critics": True,
+            "checkpoint_tag": auto_tag,
         }
 
         sd_c1 = critic1.state_dict()
@@ -320,6 +326,7 @@ def main() -> None:
     p.add_argument("--critic-lr", type=float, default=TRAIN_NUMPY_LR)
     p.add_argument("--actor-lr", type=float, default=TRAIN_NUMPY_LR)
     p.add_argument("--critic-warmup", type=int, default=1000)
+    p.add_argument("--checkpoint-tag", type=str, default=None)
     p.add_argument("--quiet", action="store_true")
     args = p.parse_args()
 
@@ -335,6 +342,7 @@ def main() -> None:
         critic_lr=args.critic_lr,
         actor_lr=args.actor_lr,
         critic_warmup=args.critic_warmup,
+        checkpoint_tag=args.checkpoint_tag,
         verbose=not args.quiet,
     )
     print(f"\n[Done] {json.dumps(result, indent=2, default=str)}")
