@@ -1,8 +1,15 @@
 """
-NumPy-only contrastive critic (same intent as ``contrastive_critic.py``).
+Dual-encoder contrastive critic (NumPy-only) aligned with Algorithm 1 of
+'Contrastive Learning as Goal-Conditioned RL' (Eysenbach et al., 2022).
 
-Used when PyTorch cannot be imported (e.g. broken CUDA DLL on Windows).
-SGD on a 2-layer MLP + row L2-normalized embeddings; 2-way softmax contrastive loss.
+    f(s, a, s_g) = phi(s, a)^T  psi(s_g) / tau
+
+phi = sa_encoder  — takes (state, action_one_hot), outputs L2-normalized embedding
+psi = g_encoder   — takes goal state ONLY (no action), outputs L2-normalized embedding
+
+Critic loss uses **in-batch negatives**: a B x B logit matrix where diagonal
+entries are positive pairs and off-diagonal entries are negatives, trained with
+sigmoid binary cross-entropy (NCE-binary / InfoMAX objective).
 """
 from __future__ import annotations
 
@@ -23,7 +30,7 @@ def _embed_forward(
     W2: np.ndarray,
     b2: np.ndarray,
 ) -> tuple[np.ndarray, tuple]:
-    """Returns normalized embedding h and cache for backward."""
+    """2-layer MLP -> L2-normalized embedding.  Returns (h, cache)."""
     z1 = x @ W1 + b1
     h1 = np.maximum(z1, 0.0)
     z2 = h1 @ W2 + b2
@@ -39,9 +46,8 @@ def _embed_backward(
     W1: np.ndarray,
     W2: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Backprop through embed; returns dW1, db1, dW2, db2, dx."""
+    """Backprop through _embed_forward; returns dW1, db1, dW2, db2, dx."""
     x, z1, h1, z2, norm, h = cache
-    # h = z2 / norm
     dz2 = (dh - h * np.sum(dh * h, axis=1, keepdims=True)) / norm
     dW2 = h1.T @ dz2
     db2 = np.sum(dz2, axis=0)
@@ -54,6 +60,8 @@ def _embed_backward(
 
 
 class ContrastiveCriticNumpy:
+    """Dual-encoder contrastive critic with in-batch negatives (Algorithm 1)."""
+
     def __init__(
         self,
         state_dim: int,
@@ -62,118 +70,153 @@ class ContrastiveCriticNumpy:
         emb_dim: int = 64,
         tau: float = 0.07,
         seed: int = 0,
-        loss_family: str = "sigmoid_bce_weight1",
     ) -> None:
         rng = np.random.default_rng(seed)
         self.state_dim = state_dim
         self.n_actions = n_actions
         self.tau = tau
-        self.loss_family = loss_family
-        in_dim = state_dim + n_actions
-        # He-ish init
-        s1 = np.sqrt(2.0 / in_dim)
+        self.emb_dim = emb_dim
+
+        # --- sa_encoder: phi(s, a) ----------------------------------------
+        sa_in = state_dim + n_actions
+        s1 = np.sqrt(2.0 / sa_in)
         s2 = np.sqrt(2.0 / hidden)
-        self.W1 = rng.normal(0.0, s1, (in_dim, hidden)).astype(np.float64)
-        self.b1 = np.zeros(hidden, dtype=np.float64)
-        self.W2 = rng.normal(0.0, s2, (hidden, emb_dim)).astype(np.float64)
-        self.b2 = np.zeros(emb_dim, dtype=np.float64)
+        self.sa_W1 = rng.normal(0.0, s1, (sa_in, hidden)).astype(np.float64)
+        self.sa_b1 = np.zeros(hidden, dtype=np.float64)
+        self.sa_W2 = rng.normal(0.0, s2, (hidden, emb_dim)).astype(np.float64)
+        self.sa_b2 = np.zeros(emb_dim, dtype=np.float64)
 
-    def _embed(self, s: np.ndarray, a: np.ndarray) -> tuple[np.ndarray, tuple]:
-        """s, a: batch (B, dim) and (B,) int."""
+        # --- g_encoder: psi(s_g) — NO action input ------------------------
+        g_in = state_dim
+        g_s1 = np.sqrt(2.0 / g_in)
+        g_s2 = np.sqrt(2.0 / hidden)
+        self.g_W1 = rng.normal(0.0, g_s1, (g_in, hidden)).astype(np.float64)
+        self.g_b1 = np.zeros(hidden, dtype=np.float64)
+        self.g_W2 = rng.normal(0.0, g_s2, (hidden, emb_dim)).astype(np.float64)
+        self.g_b2 = np.zeros(emb_dim, dtype=np.float64)
+
+    # ----- forward helpers ------------------------------------------------
+
+    def _embed_sa(
+        self, s: np.ndarray, a: np.ndarray
+    ) -> tuple[np.ndarray, tuple]:
+        """phi(s, a): (B, state_dim), (B,) int -> (B, emb_dim)."""
         s = np.asarray(s, dtype=np.float64)
-        oh = _one_hot(a, self.n_actions)
+        oh = _one_hot(np.asarray(a, dtype=np.int64), self.n_actions)
         x = np.concatenate([s, oh], axis=1)
-        return _embed_forward(x, self.W1, self.b1, self.W2, self.b2)
+        return _embed_forward(x, self.sa_W1, self.sa_b1, self.sa_W2, self.sa_b2)
 
-    def logits(
-        self,
-        s: np.ndarray,
-        a: np.ndarray,
-        s_pos: np.ndarray,
-        s_neg: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Batch pos/neg logits (same definition as in loss)."""
-        ha, _ = self._embed(s, a)
-        hpos, _ = self._embed(s_pos, a)
-        hneg, _ = self._embed(s_neg, a)
-        pos_logit = np.sum(ha * hpos, axis=1) / self.tau
-        neg_logit = np.sum(ha * hneg, axis=1) / self.tau
-        return pos_logit, neg_logit
+    def _embed_g(
+        self, g: np.ndarray
+    ) -> tuple[np.ndarray, tuple]:
+        """psi(s_g): (B, state_dim) -> (B, emb_dim)."""
+        g = np.asarray(g, dtype=np.float64)
+        return _embed_forward(g, self.g_W1, self.g_b1, self.g_W2, self.g_b2)
+
+    # ----- scoring --------------------------------------------------------
+
+    def score_actions(
+        self, s: np.ndarray, goals: np.ndarray,
+    ) -> np.ndarray:
+        """f(s, a_i, s_g) for every discrete action -> (B, n_actions).
+
+        The goal embedding psi(s_g) is computed once and reused across actions.
+        """
+        B = s.shape[0]
+        h_g, _ = self._embed_g(goals)
+        scores = np.zeros((B, self.n_actions), dtype=np.float64)
+        for a_i in range(self.n_actions):
+            a_batch = np.full(B, a_i, dtype=np.int64)
+            h_sa, _ = self._embed_sa(s, a_batch)
+            scores[:, a_i] = np.sum(h_sa * h_g, axis=1) / self.tau
+        return scores
+
+    # ----- contrastive loss (in-batch negatives) --------------------------
 
     def loss_and_grads(
         self,
         s: np.ndarray,
         a: np.ndarray,
-        s_pos: np.ndarray,
-        s_neg: np.ndarray,
+        s_future: np.ndarray,
     ) -> tuple[float, dict[str, np.ndarray]]:
-        """Mean contrastive loss and param grads."""
-        b = s.shape[0]
-        ha, ca = self._embed(s, a)
-        hpos, cpos = self._embed(s_pos, a)
-        hneg, cneg = self._embed(s_neg, a)
+        """Algorithm 1 critic loss with in-batch negatives.
 
-        pos_logit = np.sum(ha * hpos, axis=1) / self.tau
-        neg_logit = np.sum(ha * hneg, axis=1) / self.tau
+        logits[i,j] = phi(s_i, a_i)^T psi(s_future_j) / tau   (B x B)
+        labels      = eye(B)    — diagonal = positive pairs
+        loss        = mean sigmoid_BCE(logits, labels)
+        """
+        B = s.shape[0]
+        h_sa, c_sa = self._embed_sa(s, a)       # (B, E)
+        h_g, c_g = self._embed_g(s_future)       # (B, E)
 
-        if self.loss_family == "softmax_ce":
-            m = np.maximum(np.maximum(pos_logit, neg_logit), 0.0)
-            e0 = np.exp(pos_logit - m)
-            e1 = np.exp(neg_logit - m)
-            denom = e0 + e1
-            p0 = e0 / denom
-            p1 = e1 / denom
-            loss = -np.mean(np.log(p0 + 1e-12))
-            d_lp = (p0 - 1.0) / b
-            d_ln = p1 / b
-        elif self.loss_family == "sigmoid_bce_weight1":
-            loss = float(
-                np.mean(np.logaddexp(0.0, -pos_logit) + np.logaddexp(0.0, neg_logit))
-            )
-            sig_pos = 1.0 / (1.0 + np.exp(-pos_logit))
-            sig_neg = 1.0 / (1.0 + np.exp(-neg_logit))
-            d_lp = (sig_pos - 1.0) / b
-            d_ln = sig_neg / b
-        else:
-            raise ValueError(f"Unknown loss_family: {self.loss_family!r}")
+        logits = (h_sa @ h_g.T) / self.tau       # (B, B)
+        labels = np.eye(B, dtype=np.float64)
 
-        d_ha = (d_lp[:, None] * hpos + d_ln[:, None] * hneg) / self.tau
-        d_hpos = (d_lp[:, None] * ha) / self.tau
-        d_hneg = (d_ln[:, None] * ha) / self.tau
+        loss = float(np.mean(
+            labels * np.logaddexp(0.0, -logits)
+            + (1.0 - labels) * np.logaddexp(0.0, logits)
+        ))
 
-        gW1 = np.zeros_like(self.W1)
-        gb1 = np.zeros_like(self.b1)
-        gW2 = np.zeros_like(self.W2)
-        gb2 = np.zeros_like(self.b2)
+        sig = 1.0 / (1.0 + np.exp(-np.clip(logits, -50.0, 50.0)))
+        dl = (sig - labels) / (B * B)            # (B, B)
 
-        for dh, cache in [(d_ha, ca), (d_hpos, cpos), (d_hneg, cneg)]:
-            dW1, db1, dW2, db2, _ = _embed_backward(dh, cache, self.W1, self.W2)
-            gW1 += dW1
-            gb1 += db1
-            gW2 += dW2
-            gb2 += db2
+        d_h_sa = (dl @ h_g) / self.tau            # (B, E)
+        d_h_g = (dl.T @ h_sa) / self.tau          # (B, E)
 
-        return float(loss), {
-            "W1": gW1,
-            "b1": gb1,
-            "W2": gW2,
-            "b2": gb2,
+        sa_dW1, sa_db1, sa_dW2, sa_db2, _ = _embed_backward(
+            d_h_sa, c_sa, self.sa_W1, self.sa_W2,
+        )
+        g_dW1, g_db1, g_dW2, g_db2, _ = _embed_backward(
+            d_h_g, c_g, self.g_W1, self.g_W2,
+        )
+
+        grads = {
+            "sa_W1": sa_dW1, "sa_b1": sa_db1,
+            "sa_W2": sa_dW2, "sa_b2": sa_db2,
+            "g_W1": g_dW1, "g_b1": g_db1,
+            "g_W2": g_dW2, "g_b2": g_db2,
         }
+        return loss, grads
+
+    # ----- monitoring -----------------------------------------------------
+
+    def margin(
+        self,
+        s: np.ndarray,
+        a: np.ndarray,
+        s_future: np.ndarray,
+    ) -> float:
+        """Mean positive logit minus mean negative logit (B x B matrix)."""
+        h_sa, _ = self._embed_sa(s, a)
+        h_g, _ = self._embed_g(s_future)
+        logits = (h_sa @ h_g.T) / self.tau
+        B = logits.shape[0]
+        pos_mean = float(np.trace(logits) / B)
+        neg_mean = float((np.sum(logits) - np.trace(logits)) / max(B * B - B, 1))
+        return pos_mean - neg_mean
+
+    # ----- optimiser ------------------------------------------------------
 
     def apply_sgd(self, grads: dict[str, np.ndarray], lr: float) -> None:
-        self.W1 -= lr * grads["W1"]
-        self.b1 -= lr * grads["b1"]
-        self.W2 -= lr * grads["W2"]
-        self.b2 -= lr * grads["b2"]
+        self.sa_W1 -= lr * grads["sa_W1"]
+        self.sa_b1 -= lr * grads["sa_b1"]
+        self.sa_W2 -= lr * grads["sa_W2"]
+        self.sa_b2 -= lr * grads["sa_b2"]
+        self.g_W1 -= lr * grads["g_W1"]
+        self.g_b1 -= lr * grads["g_b1"]
+        self.g_W2 -= lr * grads["g_W2"]
+        self.g_b2 -= lr * grads["g_b2"]
+
+    # ----- serialisation --------------------------------------------------
 
     def state_dict(self) -> dict:
         return {
-            "W1": self.W1,
-            "b1": self.b1,
-            "W2": self.W2,
-            "b2": self.b2,
+            "sa_W1": self.sa_W1.copy(), "sa_b1": self.sa_b1.copy(),
+            "sa_W2": self.sa_W2.copy(), "sa_b2": self.sa_b2.copy(),
+            "g_W1": self.g_W1.copy(), "g_b1": self.g_b1.copy(),
+            "g_W2": self.g_W2.copy(), "g_b2": self.g_b2.copy(),
             "state_dim": self.state_dim,
             "n_actions": self.n_actions,
             "tau": self.tau,
-            "loss_family": self.loss_family,
+            "emb_dim": self.emb_dim,
         }

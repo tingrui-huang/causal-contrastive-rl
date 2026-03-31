@@ -1,11 +1,13 @@
 """
 Joint Actor-Critic training (paper Section 5.5, offline RL variant).
 
-Alternates:
-  1. Critic update  — contrastive loss (Eq. 6, sigmoid BCE)
-  2. Actor  update  — advantage + BC loss (Eq. 8)
+Architecture aligned with Eysenbach et al. (2022) Algorithm 1:
+  - Dual-encoder critic: f(s,a,s_g) = phi(s,a)^T psi(s_g) / tau
+  - In-batch negatives: B x B logit matrix, sigmoid BCE
+  - Twin critics with min-Q for actor scoring (Section 5.5)
 
-Saves a combined checkpoint (critic weights + actor weights).
+Actor update — advantage + BC loss (Eq. 7-8):
+  max_pi  E[(1-lam) * f(s,a,sg) + lam * log pi(a_orig | s, sg)]
 
 Usage:
   python experiments/train_actor_critic.py \
@@ -53,32 +55,14 @@ from configs.training_defaults import (
 from utils.offline_data import collect_episodes
 from utils.preprocess import extract_state_oracle
 
-LOSS_FAMILY = "sigmoid_bce_weight1"
+LOSS_FAMILY = "inbatch_sigmoid_bce"
 GAMMA = 0.95
 
 
 def _geometric_offset(rng: np.random.Generator, max_val: int) -> int:
-    """Sample offset from Geometric(1-γ), clipped to [1, max_val]."""
+    """Sample offset from Geometric(1-gamma), clipped to [1, max_val]."""
     offset = int(rng.geometric(1.0 - GAMMA))
     return min(max(offset, 1), max_val)
-
-
-def _compute_critic_scores(
-    critic: ContrastiveCriticNumpy,
-    states: np.ndarray,
-    goals: np.ndarray,
-) -> np.ndarray:
-    """f(s, a_i, sg) for all actions → (B, n_actions)."""
-    B = states.shape[0]
-    s64 = np.asarray(states, dtype=np.float64)
-    g64 = np.asarray(goals, dtype=np.float64)
-    scores = np.zeros((B, critic.n_actions), dtype=np.float64)
-    for a_i in range(critic.n_actions):
-        a_batch = np.full(B, a_i, dtype=np.int64)
-        h_sa, _ = critic._embed(s64, a_batch)
-        h_sg, _ = critic._embed(g64, a_batch)
-        scores[:, a_i] = np.sum(h_sa * h_sg, axis=1) / critic.tau
-    return scores
 
 
 def _build_valid_anchors(
@@ -97,15 +81,14 @@ def _build_batch(
     episode_states: list[np.ndarray],
     episode_actions: list[np.ndarray],
     valid_anchors: list[tuple[int, int]],
-    buffer,
-    state_dim: int,
     batch_size: int,
     rng: np.random.Generator,
-    episode_regimes: list[int] | None = None,
-    regime_buffers: dict | None = None,
-    oracle_state: bool = False,
 ) -> dict[str, np.ndarray]:
-    """Sample batch with geometric positive offset (paper Sec. 3, Eq. 3)."""
+    """Sample batch: (s, a, s_future) with geometric positive offset.
+
+    Negatives are handled in-batch by the critic (B x B logit matrix),
+    so no explicit s_neg is needed.
+    """
     anchor_ids = rng.integers(low=0, high=len(valid_anchors), size=batch_size)
     anchor_pairs = [valid_anchors[int(i)] for i in anchor_ids]
 
@@ -116,24 +99,14 @@ def _build_batch(
         [episode_actions[ep][t] for ep, t in anchor_pairs], dtype=np.int64
     )
 
-    s_pos_list = []
+    s_future_list = []
     for ep, t in anchor_pairs:
         max_off = len(episode_states[ep]) - t - 1
         off = _geometric_offset(rng, max_off)
-        s_pos_list.append(episode_states[ep][t + off])
-    s_pos = np.stack(s_pos_list, axis=0).astype(np.float32, copy=False)
+        s_future_list.append(episode_states[ep][t + off])
+    s_future = np.stack(s_future_list, axis=0).astype(np.float32, copy=False)
 
-    use_regime_neg = oracle_state and episode_regimes is not None and regime_buffers is not None
-    s_neg = np.empty((batch_size, state_dim), dtype=np.float32)
-    for i, (ep, _) in enumerate(anchor_pairs):
-        if use_regime_neg:
-            regime = episode_regimes[ep]
-            neg_item = regime_buffers[regime].sample(1)[0]
-        else:
-            neg_item = buffer.sample(1)[0]
-        s_neg[i] = np.asarray(neg_item["state"], dtype=np.float32)
-
-    return {"s": s, "a": a, "s_pos": s_pos, "s_neg": s_neg}
+    return {"s": s, "a": a, "s_future": s_future}
 
 
 def train(
@@ -155,6 +128,7 @@ def train(
     if verbose:
         print(f"[ActorCritic] env={env_id}  oracle_state={oracle_state}  λ={lam}")
         print(f"[ActorCritic] episodes={num_episodes}  steps={num_steps}  warmup={critic_warmup}")
+        print(f"[ActorCritic] twin_critics=True  loss={LOSS_FAMILY}")
 
     state_fn = extract_state_oracle if oracle_state else None
     (
@@ -162,14 +136,14 @@ def train(
         episode_states,
         episode_actions,
         valid_anchors,
-        buffer,
+        _buffer,
         state_dim,
         n_actions,
         total_steps,
-        k,
+        _k,
         rng,
-        episode_regimes,
-        regime_buffers,
+        _episode_regimes,
+        _regime_buffers,
     ) = collect_episodes(
         seed=seed,
         env_id=env_id,
@@ -187,15 +161,24 @@ def train(
         print(f"[ActorCritic] state_dim={state_dim}  n_actions={n_actions}  "
               f"total_transitions={total_steps}  batch={batch_size}  γ={GAMMA}")
 
-    critic = ContrastiveCriticNumpy(
+    # --- Twin critics (Section 5.5: min-Q for offline RL) -----------------
+    critic1 = ContrastiveCriticNumpy(
         state_dim=state_dim,
         n_actions=n_actions,
         hidden=TRAIN_HIDDEN,
         emb_dim=TRAIN_EMB_DIM,
         tau=TRAIN_TAU,
         seed=seed,
-        loss_family=LOSS_FAMILY,
     )
+    critic2 = ContrastiveCriticNumpy(
+        state_dim=state_dim,
+        n_actions=n_actions,
+        hidden=TRAIN_HIDDEN,
+        emb_dim=TRAIN_EMB_DIM,
+        tau=TRAIN_TAU,
+        seed=seed + 100,
+    )
+
     actor = GoalConditionedActorNumpy(
         state_dim=state_dim,
         n_actions=n_actions,
@@ -211,36 +194,43 @@ def train(
             episode_states=episode_states,
             episode_actions=episode_actions,
             valid_anchors=valid_anchors,
-            buffer=buffer,
-            state_dim=state_dim,
             batch_size=batch_size,
             rng=rng,
-            episode_regimes=episode_regimes,
-            regime_buffers=regime_buffers,
-            oracle_state=oracle_state,
         )
 
-        c_loss, c_grads = critic.loss_and_grads(
-            batch["s"], batch["a"], batch["s_pos"], batch["s_neg"]
+        # Train both critics on the same batch
+        c1_loss, c1_grads = critic1.loss_and_grads(
+            batch["s"], batch["a"], batch["s_future"]
         )
-        critic.apply_sgd(c_grads, lr=critic_lr)
-        c_losses.append(float(c_loss))
+        critic1.apply_sgd(c1_grads, lr=critic_lr)
 
-        pl, nl = critic.logits(batch["s"], batch["a"], batch["s_pos"], batch["s_neg"])
-        margin = float(np.mean(pl - nl))
-        margins.append(margin)
+        c2_loss, c2_grads = critic2.loss_and_grads(
+            batch["s"], batch["a"], batch["s_future"]
+        )
+        critic2.apply_sgd(c2_grads, lr=critic_lr)
+
+        c_loss = 0.5 * (c1_loss + c2_loss)
+        c_losses.append(c_loss)
+
+        m1 = critic1.margin(batch["s"], batch["a"], batch["s_future"])
+        m2 = critic2.margin(batch["s"], batch["a"], batch["s_future"])
+        margins.append(0.5 * (m1 + m2))
 
         if step > critic_warmup:
-            f_all = _compute_critic_scores(critic, batch["s"], batch["s_pos"])
+            # Min-Q: pessimistic action scoring from twin critics
+            scores1 = critic1.score_actions(batch["s"], batch["s_future"])
+            scores2 = critic2.score_actions(batch["s"], batch["s_future"])
+            f_all = np.minimum(scores1, scores2)
+
             a_loss, a_grads = actor.loss_and_grads(
-                batch["s"], batch["s_pos"], batch["a"], f_all, lam=lam
+                batch["s"], batch["s_future"], batch["a"], f_all, lam=lam
             )
             actor.apply_sgd(a_grads, lr=actor_lr)
             a_losses.append(float(a_loss))
 
             probs = actor.action_probs(
                 batch["s"].astype(np.float64),
-                batch["s_pos"].astype(np.float64),
+                batch["s_future"].astype(np.float64),
             )
             pred = np.argmax(probs, axis=1)
             bc_acc = float(np.mean(pred == batch["a"]))
@@ -281,18 +271,29 @@ def train(
             "state_dim": state_dim, "n_actions": n_actions,
             "critic_lr": critic_lr, "actor_lr": actor_lr,
             "hidden": TRAIN_HIDDEN, "emb_dim": TRAIN_EMB_DIM, "tau": TRAIN_TAU,
-            "method": tag, "has_actor": True,
+            "method": tag, "has_actor": True, "twin_critics": True,
         }
 
-        sd_critic = critic.state_dict()
+        sd_c1 = critic1.state_dict()
+        sd_c2 = critic2.state_dict()
         sd_actor = actor.state_dict()
 
         np.savez(
             ckpt_path,
-            W1=sd_critic["W1"], b1=sd_critic["b1"],
-            W2=sd_critic["W2"], b2=sd_critic["b2"],
+            # Critic 1 (sa_encoder + g_encoder)
+            c1_sa_W1=sd_c1["sa_W1"], c1_sa_b1=sd_c1["sa_b1"],
+            c1_sa_W2=sd_c1["sa_W2"], c1_sa_b2=sd_c1["sa_b2"],
+            c1_g_W1=sd_c1["g_W1"], c1_g_b1=sd_c1["g_b1"],
+            c1_g_W2=sd_c1["g_W2"], c1_g_b2=sd_c1["g_b2"],
+            # Critic 2 (sa_encoder + g_encoder)
+            c2_sa_W1=sd_c2["sa_W1"], c2_sa_b1=sd_c2["sa_b1"],
+            c2_sa_W2=sd_c2["sa_W2"], c2_sa_b2=sd_c2["sa_b2"],
+            c2_g_W1=sd_c2["g_W1"], c2_g_b1=sd_c2["g_b1"],
+            c2_g_W2=sd_c2["g_W2"], c2_g_b2=sd_c2["g_b2"],
+            # Actor
             actor_W1=sd_actor["actor_W1"], actor_b1=sd_actor["actor_b1"],
             actor_W2=sd_actor["actor_W2"], actor_b2=sd_actor["actor_b2"],
+            # Metadata
             state_dim=state_dim, n_actions=n_actions,
             tau=TRAIN_TAU, actor_hidden=TRAIN_HIDDEN,
             method=np.array(tag),
