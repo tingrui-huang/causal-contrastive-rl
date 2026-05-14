@@ -8,8 +8,10 @@
 可选任务（复制其中一个填到 TASK）：
   "eval_oracle"       ── 评估 Oracle 模型，结果写入 CSV
   "eval_confounded"   ── 评估 Confounded 模型，结果写入 CSV
+  "eval_causal_pessimistic" ── 评估 Causal Pessimistic 模型，结果写入 CSV
   "train_oracle"      ── 训练 Oracle 模型（有 U 信息）
   "train_confounded"  ── 训练 Confounded 模型（无 U 信息）
+  "train_causal_pessimistic" ── 训练 Causal Pessimistic 模型
 """
 
 import sys
@@ -28,6 +30,8 @@ TASK = "eval_oracle"
 import envs  # noqa: F401 — 注册环境
 
 from configs.run_config import (
+    EVAL_CAUSAL_PESSIMISTIC_CHECKPOINT,
+    EVAL_CAUSAL_PESSIMISTIC_OUTPUT,
     EVAL_CONFOUNDED_CHECKPOINT,
     EVAL_CONFOUNDED_OUTPUT,
     EVAL_ENV_ID,
@@ -39,14 +43,20 @@ from configs.run_config import (
     TRAIN_CRITIC_LR,
     TRAIN_CRITIC_WARMUP,
     TRAIN_ENV_ID,
+    TRAIN_CONSTANT_M,
     TRAIN_LAM,
+    TRAIN_NEG_GOALS_N,
+    TRAIN_NEIGHBOR_MAX_MANHATTAN,
+    TRAIN_NEIGHBOR_MAX_PER_SAMPLE,
     TRAIN_NUM_EPISODES,
     TRAIN_NUM_STEPS,
     TRAIN_ORACLE_EPSILON,
+    TRAIN_PESSIMISM_MODE,
     TRAIN_SEED,
 )
 from experiments.evaluate_actor_forced_u import CSV_FIELDS, evaluate_checkpoint
 from experiments.train_actor_critic import train as _train
+from experiments.train_causal_pessimistic import train as _train_causal_pessimistic
 import csv
 
 
@@ -82,6 +92,15 @@ elif TASK == "eval_confounded":
     )
     _save_csv(EVAL_CONFOUNDED_OUTPUT, row)
 
+elif TASK == "eval_causal_pessimistic":
+    row = evaluate_checkpoint(
+        checkpoint=ROOT / EVAL_CAUSAL_PESSIMISTIC_CHECKPOINT,
+        eval_env_id=EVAL_ENV_ID,
+        episodes_per_regime=EVAL_EPISODES,
+        temperature=EVAL_TEMPERATURE,
+    )
+    _save_csv(EVAL_CAUSAL_PESSIMISTIC_OUTPUT, row)
+
 elif TASK == "train_oracle":
     _train(
         seed=TRAIN_SEED,
@@ -110,6 +129,28 @@ elif TASK == "train_confounded":
         oracle_epsilon=TRAIN_ORACLE_EPSILON,
     )
 
+elif TASK == "train_causal_pessimistic":
+    _train_causal_pessimistic(
+        seed=TRAIN_SEED,
+        env_id=TRAIN_ENV_ID,
+        num_episodes=TRAIN_NUM_EPISODES,
+        num_steps=TRAIN_NUM_STEPS,
+        oracle_state=False,
+        lam=TRAIN_LAM,
+        critic_lr=TRAIN_CRITIC_LR,
+        actor_lr=TRAIN_ACTOR_LR,
+        critic_warmup=TRAIN_CRITIC_WARMUP,
+        oracle_epsilon=TRAIN_ORACLE_EPSILON,
+        pessimism_mode=TRAIN_PESSIMISM_MODE,
+        constant_M=TRAIN_CONSTANT_M,
+        neg_goals_n=TRAIN_NEG_GOALS_N,
+        neighbor_max_manhattan=TRAIN_NEIGHBOR_MAX_MANHATTAN,
+        neighbor_max_per_sample=TRAIN_NEIGHBOR_MAX_PER_SAMPLE,
+    )
+
 else:
     print(f"[run] 未知任务: {TASK!r}")
-    print("可选任务: eval_oracle / eval_confounded / train_oracle / train_confounded")
+    print(
+        "可选任务: eval_oracle / eval_confounded / eval_causal_pessimistic / "
+        "train_oracle / train_confounded / train_causal_pessimistic"
+    )
