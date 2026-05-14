@@ -32,6 +32,11 @@ from configs.training_defaults import (
     TRAIN_TAU,
 )
 from experiments.train_actor_critic import GAMMA, LOSS_FAMILY, _build_batch, _build_valid_anchors
+from utils.domain_knowledge import (
+    build_position_index,
+    deduplicate_position_index,
+    get_neighbor_states_for_batch,
+)
 from utils.offline_data import collect_episodes
 from utils.preprocess import extract_state_oracle
 
@@ -50,6 +55,10 @@ def _method_tag(pessimism_mode: str, oracle_state: bool) -> str:
     return f"{prefix}_{pessimism_mode}"
 
 
+def _method_tag_for_checkpoint(pessimism_mode: str, oracle_state: bool) -> str:
+    return _method_tag(pessimism_mode, oracle_state)
+
+
 def train(
     *,
     seed: int = TRAIN_SEED,
@@ -63,9 +72,11 @@ def train(
     critic_lr: float = TRAIN_NUMPY_LR,
     actor_lr: float = TRAIN_NUMPY_LR,
     critic_warmup: int = 1000,
-    pessimism_mode: str = "min_neg",
+    pessimism_mode: str = "neighbor",
     constant_M: float = 2.0,
     neg_goals_n: int = 16,
+    neighbor_max_manhattan: int = 2,
+    neighbor_max_per_sample: int = 32,
     checkpoint_tag: str | None = None,
     verbose: bool = True,
     save_checkpoint: bool = True,
@@ -74,6 +85,9 @@ def train(
         print(f"[CausalPessimistic] env={env_id}  pessimism_mode={pessimism_mode}  λ={lam}")
         print(f"[CausalPessimistic] episodes={num_episodes}  steps={num_steps}  warmup={critic_warmup}")
         print(f"[CausalPessimistic] neg_goals_N={neg_goals_n}  constant_M={constant_M}")
+        if pessimism_mode == "neighbor":
+            print(f"[CausalPessimistic] neighbor_max_manhattan={neighbor_max_manhattan}  "
+                  f"neighbor_max_per_sample={neighbor_max_per_sample}")
         print(f"[CausalPessimistic] twin_critics=True  loss={LOSS_FAMILY}")
 
     state_fn = extract_state_oracle if oracle_state else None
@@ -103,6 +117,15 @@ def train(
 
     valid_anchors = _build_valid_anchors(episode_states)
     batch_size = min(64, len(valid_anchors))
+
+    pos_index = None
+    if pessimism_mode == "neighbor":
+        raw_index = build_position_index(episode_states)
+        pos_index = deduplicate_position_index(raw_index, max_per_position=8, rng=rng)
+        if verbose:
+            print(f"[CausalPessimistic] position_index: {len(pos_index)} unique positions, "
+                  f"manhattan={neighbor_max_manhattan}")
+
     if verbose:
         print(
             f"[CausalPessimistic] state_dim={state_dim}  n_actions={n_actions}  "
@@ -178,7 +201,19 @@ def train(
             scores1 = critic1.score_actions(batch["s"], batch["s_future"])
             scores2 = critic2.score_actions(batch["s"], batch["s_future"])
             critic_scores = np.minimum(scores1, scores2)
-            neg_goals = _sample_negative_goals(buffer, neg_goals_n)
+
+            batch_neighbor_states = None
+            neg_goals = None
+            if pessimism_mode == "neighbor":
+                batch_neighbor_states = get_neighbor_states_for_batch(
+                    batch["s"].astype(np.float64),
+                    pos_index,
+                    max_manhattan=neighbor_max_manhattan,
+                    max_per_sample=neighbor_max_per_sample,
+                    rng=rng,
+                )
+            elif pessimism_mode == "min_neg":
+                neg_goals = _sample_negative_goals(buffer, neg_goals_n)
 
             a_loss, a_grads, diag = actor.loss_and_grads(
                 state=batch["s"],
@@ -186,10 +221,11 @@ def train(
                 a_obs=batch["a"],
                 critic_scores=critic_scores,
                 neg_goals=neg_goals,
-                phi_fn=phi_fn if pessimism_mode == "min_neg" else None,
-                psi_fn=psi_fn if pessimism_mode == "min_neg" else None,
+                phi_fn=phi_fn if pessimism_mode in ("min_neg", "neighbor") else None,
+                psi_fn=psi_fn if pessimism_mode in ("min_neg", "neighbor") else None,
                 lam=lam,
                 score_scale=1.0 / TRAIN_TAU,
+                neighbor_states=batch_neighbor_states,
             )
             actor.apply_sgd(a_grads, lr=actor_lr)
             a_losses.append(float(a_loss))
@@ -272,6 +308,8 @@ def train(
             "pessimism_mode": pessimism_mode,
             "constant_M": constant_M,
             "neg_goals_N": neg_goals_n,
+            "neighbor_max_manhattan": neighbor_max_manhattan,
+            "neighbor_max_per_sample": neighbor_max_per_sample,
             "checkpoint_tag": auto_tag,
         }
 
@@ -332,9 +370,12 @@ def main() -> None:
     parser.add_argument("--critic-lr", type=float, default=TRAIN_NUMPY_LR)
     parser.add_argument("--actor-lr", type=float, default=TRAIN_NUMPY_LR)
     parser.add_argument("--critic-warmup", type=int, default=1000)
-    parser.add_argument("--pessimism-mode", type=str, default="min_neg", choices=["min_neg", "constant"])
+    parser.add_argument("--pessimism-mode", type=str, default="neighbor",
+                        choices=["min_neg", "constant", "neighbor"])
     parser.add_argument("--constant-M", type=float, default=2.0)
     parser.add_argument("--neg-goals-n", type=int, default=16)
+    parser.add_argument("--neighbor-max-manhattan", type=int, default=2)
+    parser.add_argument("--neighbor-max-per-sample", type=int, default=32)
     parser.add_argument("--checkpoint-tag", type=str, default=None)
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
@@ -354,6 +395,8 @@ def main() -> None:
         pessimism_mode=args.pessimism_mode,
         constant_M=args.constant_M,
         neg_goals_n=args.neg_goals_n,
+        neighbor_max_manhattan=args.neighbor_max_manhattan,
+        neighbor_max_per_sample=args.neighbor_max_per_sample,
         checkpoint_tag=args.checkpoint_tag,
         verbose=not args.quiet,
     )

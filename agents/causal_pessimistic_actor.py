@@ -19,12 +19,13 @@ class CausalPessimisticActorNumpy:
         n_actions: int,
         hidden: int = 128,
         seed: int = 0,
-        pessimism_mode: str = "min_neg",
+        pessimism_mode: str = "neighbor",
         constant_M: float = 2.0,
     ) -> None:
-        if pessimism_mode not in {"min_neg", "constant"}:
+        if pessimism_mode not in {"min_neg", "constant", "neighbor"}:
             raise ValueError(
-                f"Unknown pessimism_mode={pessimism_mode!r}; expected 'min_neg' or 'constant'."
+                f"Unknown pessimism_mode={pessimism_mode!r}; "
+                f"expected 'min_neg', 'constant', or 'neighbor'."
             )
         rng = np.random.default_rng(seed)
         in_dim = state_dim * 2
@@ -106,6 +107,7 @@ class CausalPessimisticActorNumpy:
         phi_fn: Callable[[np.ndarray, np.ndarray], np.ndarray] | None,
         psi_fn: Callable[[np.ndarray], np.ndarray] | None,
         score_scale: float = 1.0,
+        neighbor_states: list[np.ndarray] | None = None,
     ) -> tuple[np.ndarray, dict[str, float]]:
         state = np.asarray(state, dtype=np.float64)
         a_obs = np.asarray(a_obs, dtype=np.int64)
@@ -122,7 +124,27 @@ class CausalPessimisticActorNumpy:
         counterfactual_mask = np.ones((B, self.n_actions), dtype=bool)
         counterfactual_mask[np.arange(B), a_obs] = False
 
-        if self.pessimism_mode == "min_neg":
+        if self.pessimism_mode == "neighbor":
+            if phi_fn is None or psi_fn is None:
+                raise ValueError("neighbor mode requires phi_fn and psi_fn.")
+            if neighbor_states is None:
+                raise ValueError("neighbor mode requires neighbor_states.")
+
+            neighbor_embs = [psi_fn(ns) for ns in neighbor_states]
+
+            for action_idx in range(self.n_actions):
+                action_batch = np.full(B, action_idx, dtype=np.int64)
+                h_sa = phi_fn(state, action_batch)
+                for i in range(B):
+                    if action_idx == a_obs[i]:
+                        continue
+                    scores_i = score_scale * (h_sa[i : i + 1] @ neighbor_embs[i].T)
+                    pessimistic[i, action_idx] = min(
+                        critic_scores[i, action_idx],
+                        float(np.min(scores_i)),
+                    )
+
+        elif self.pessimism_mode == "min_neg":
             if neg_goals is None or phi_fn is None or psi_fn is None:
                 raise ValueError("min_neg mode requires neg_goals, phi_fn, and psi_fn.")
             neg_goals = np.asarray(neg_goals, dtype=np.float64)
@@ -198,6 +220,7 @@ class CausalPessimisticActorNumpy:
         psi_fn: Callable[[np.ndarray], np.ndarray] | None,
         lam: float = 0.5,
         score_scale: float = 1.0,
+        neighbor_states: list[np.ndarray] | None = None,
     ) -> tuple[float, dict[str, np.ndarray], dict[str, float]]:
         """
         Same objective structure as the baseline actor, but evaluated against a
@@ -212,6 +235,7 @@ class CausalPessimisticActorNumpy:
             phi_fn=phi_fn,
             psi_fn=psi_fn,
             score_scale=score_scale,
+            neighbor_states=neighbor_states,
         )
 
         z2, (x, z1, h1) = self._forward(state, goal)
