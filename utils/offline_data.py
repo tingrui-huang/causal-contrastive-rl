@@ -173,6 +173,13 @@ def build_policy(
             epsilon=oracle_epsilon,
             seed=seed,
         )
+    if collector_mode == "multigoal_oracle":
+        from utils.multigoal_oracle import build_multigoal_oracle_policy
+        return build_multigoal_oracle_policy(
+            env,
+            epsilon=oracle_epsilon,
+            seed=seed,
+        )
     raise ValueError(f"Unknown collector_mode: {collector_mode!r}")
 
 
