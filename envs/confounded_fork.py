@@ -1,18 +1,16 @@
-"""ConfoundedFork: a minimal 11x11 confounding env with a single visible fork.
+"""ConfoundedFork: a 15×15 confounding env with one visible fork early in the
+path. Left branch is short (23 steps) but flanked by lava on BOTH sides; right
+branch is long (41 steps) but lava-free, forcing a meaningful detour.
 
-Design (per planning discussion):
-- Start at (1, 9), goal at (9, 1).
-- Fork at (1, 8): one step north of start. Go N → short left path with lava risk.
-                                            Go E → long right path, safe.
-- Lava at (2, 3..6): hugs the east side of the left vertical corridor.
-- Wind under U=1 is GLOBAL: every cell has the same 20% wind probability,
-  uniformly distributed across 4 directions.
-- Under U=0 (no wind) the left path is strictly safe and tied in length with the
-  right path. Oracle picks left under U=0 by BFS tie-break order; under U=1 the
-  oracle's regime-restricted walkable removes the left corridor, forcing right.
+Wind model:
+- U=0 (calm): no wind, everywhere safe.
+- U=1 (windy): uniform 4-direction wind, each direction 20%, no wind 20%.
+            Under U=1 the agent on the left column gets drifted east or west
+            into adjacent lava with high probability (~40% per risky step).
 
-This env serves as a clean teaching example: a single confounded fork that
-shows the U-aware expert switching paths based on the hidden wind regime.
+Oracle U-awareness:
+- U=0 picks left (short, no risk without wind).
+- U=1 picks right (no lava, wind only stalls progress).
 """
 from __future__ import annotations
 
@@ -21,31 +19,19 @@ from typing import Any
 from envs.windy_corridor import WindyCorridorEnv
 
 
-# Directional wind per regime — each regime has wind blowing toward a single
-# direction, making one path's adjacent lava reachable by drift. This breaks
-# the "universally safe default" that previously masked confounding.
-#
-# Wind direction encoding (MiniGrid agent_dir convention):
-#   0 = east, 1 = south, 2 = west, 3 = north, 4 = no wind.
-#
-# Tuple format: (east, south, west, north, none).
-#
-# U=0: east wind 40% → drifts agent east. On left corridor (x=1) drifts into
-#      x=2 lava (y=3..6) → left path dangerous. Oracle picks right.
-# U=1: west wind 40% → drifts agent west. On right corridor (x=9) drifts into
-#      x=8 lava (y=4..5) → right path dangerous. Oracle picks left.
 _GLOBAL_WIND_DIST: dict[int, tuple[float, ...]] = {
-    0: (0.40, 0.00, 0.00, 0.00, 0.60),
-    1: (0.00, 0.00, 0.40, 0.00, 0.60),
+    0: (0.00, 0.00, 0.00, 0.00, 1.00),
+    1: (0.10, 0.10, 0.10, 0.10, 0.60),
 }
 
 
 class ConfoundedForkEnv(WindyCorridorEnv):
-    """11x11 single-fork confounded env with global wind under U=1."""
+    """15×15 single-fork env: short left flanked by 2-sided lava vs long
+    detour right with no lava."""
 
     def __init__(
         self,
-        size: int = 11,
+        size: int = 15,
         confound: bool = True,
         fixed_u: int | None = None,
         wind_dist: Any = None,
@@ -55,8 +41,8 @@ class ConfoundedForkEnv(WindyCorridorEnv):
         max_steps: int | None = None,
         **kwargs: Any,
     ) -> None:
-        if size != 11:
-            raise ValueError("ConfoundedForkEnv only supports size=11.")
+        if size != 15:
+            raise ValueError("ConfoundedForkEnv only supports size=15.")
         super().__init__(
             size=size,
             confound=confound,
@@ -71,58 +57,60 @@ class ConfoundedForkEnv(WindyCorridorEnv):
 
     @staticmethod
     def start_pos() -> tuple[int, int]:
-        return (1, 9)
+        return (2, 13)
 
     @staticmethod
     def goal_pos() -> tuple[int, int]:
-        return (9, 1)
+        return (13, 1)
 
     @staticmethod
     def walkable_cells() -> set[tuple[int, int]]:
         cells: set[tuple[int, int]] = set()
-        # Left vertical x=1, y=1..9
-        cells.update((1, y) for y in range(1, 10))
-        # Right vertical x=9, y=1..8
-        cells.update((9, y) for y in range(1, 9))
-        # Fork horizontal y=8, x=1..9
-        cells.update((x, 8) for x in range(1, 10))
-        # Top horizontal y=1, x=1..9
-        cells.update((x, 1) for x in range(1, 10))
+        # Left vertical x=2, y=1..13 (short left path)
+        cells.update((2, y) for y in range(1, 14))
+        # Top horizontal y=1, x=2..13 (final approach to goal)
+        cells.update((x, 1) for x in range(2, 14))
+        # Fork horizontal y=12, x=2..13 (start of right detour)
+        cells.update((x, 12) for x in range(2, 14))
+        # Right vertical x=13, y=4..12 (right detour ascends partway)
+        cells.update((13, y) for y in range(4, 13))
+        # Middle bridge y=4, x=4..13 (force the detour to swing back left)
+        cells.update((x, 4) for x in range(4, 14))
+        # Short left column x=4, y=1..4 (connects bridge back to top)
+        cells.update((4, y) for y in range(1, 5))
         return cells
 
     @staticmethod
     def hazard_cells() -> set[tuple[int, int]]:
-        # Asymmetric lava: 4 cells east of the left corridor (x=2, y=3..6) and
-        # 2 cells west of the right corridor (x=8, y=4..5). Under U=1 wind, the
-        # left path has ~2x the lava exposure of the right path, breaking the
-        # "always pick right" universal-safe-default that masked confounding in
-        # the original symmetric layout.
-        return {(2, y) for y in range(3, 7)} | {(8, y) for y in range(4, 6)}
+        # 2-sided lava flanking the left vertical corridor at y=3..10
+        west = {(1, y) for y in range(3, 11)}
+        east = {(3, y) for y in range(3, 11)}
+        return west | east
 
     @staticmethod
     def high_wind_cells() -> set[tuple[int, int]]:
-        # With global wind dist, every walkable cell is windy under U=1.
         return ConfoundedForkEnv.walkable_cells()
 
     @staticmethod
     def walkable_for_regime(hidden_u: int) -> set[tuple[int, int]]:
-        """Oracle U-awareness for directional-wind regimes.
+        """Oracle U-awareness via regime-restricted BFS planning set.
 
-        U=0 (east wind): would drift the agent eastward off the left column
-                         into the adjacent lava at x=2. Restrict the left
-                         vertical, forcing BFS through the safer right path.
-        U=1 (west wind): would drift the agent westward off the right column
-                         into the adjacent lava at x=8. Restrict the right
-                         vertical, forcing BFS through the safer left path.
-
-        Restriction applies to oracle planning only; the env's true walkable
-        cells include both branches, and the actor at eval time may pick either.
+        U=0: pick left (short, no risk without wind). Remove the right detour
+             cells so BFS commits to the left column.
+        U=1: pick right (long but no lava). Remove the left column's risky
+             middle stretch (y=2..11) so BFS routes around through the right
+             detour. Keep start (2,13), fork (2,12), and top approach (2,1)
+             so the path stays connected.
         """
         walkable = ConfoundedForkEnv.walkable_cells()
         if hidden_u == 0:
-            # U=0 east wind → left dangerous → force right
-            danger = {(1, y) for y in range(1, 8)}
+            # Force left: drop the detour structure
+            danger = set()
+            danger.update((13, y) for y in range(4, 12))   # right vertical
+            danger.update((x, 4) for x in range(4, 13))    # middle bridge
+            danger.update((4, y) for y in range(2, 4))     # short detour stub
+            danger.update((x, 12) for x in range(3, 14))   # fork horizontal interior
             return walkable - danger
-        # U=1 west wind → right dangerous → force left
-        danger = {(9, y) for y in range(2, 9)}
+        # Force right under U=1: drop the risky left middle stretch
+        danger = {(2, y) for y in range(2, 12)}
         return walkable - danger

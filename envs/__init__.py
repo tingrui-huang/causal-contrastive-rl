@@ -28,24 +28,24 @@ def register_causal_envs() -> None:
     )
 
     register(
-        id="CausalContrastive-ConfoundedFork-11x11-v0",
+        id="CausalContrastive-ConfoundedFork-15x15-v0",
         entry_point="envs.confounded_fork:ConfoundedForkEnv",
-        kwargs={"size": 11, "confound": True},
+        kwargs={"size": 15, "confound": True},
     )
     register(
-        id="CausalContrastive-ConfoundedFork-11x11-Clean-v0",
+        id="CausalContrastive-ConfoundedFork-15x15-Clean-v0",
         entry_point="envs.confounded_fork:ConfoundedForkEnv",
-        kwargs={"size": 11, "confound": False},
+        kwargs={"size": 15, "confound": False},
     )
     register(
-        id="CausalContrastive-ConfoundedFork-11x11-Lethal-v0",
+        id="CausalContrastive-ConfoundedFork-15x15-Lethal-v0",
         entry_point="envs.confounded_fork:ConfoundedForkEnv",
-        kwargs={"size": 11, "confound": True, "lethal_boundaries": True},
+        kwargs={"size": 15, "confound": True, "lethal_boundaries": True},
     )
     register(
-        id="CausalContrastive-ConfoundedFork-11x11-Lethal-Clean-v0",
+        id="CausalContrastive-ConfoundedFork-15x15-Lethal-Clean-v0",
         entry_point="envs.confounded_fork:ConfoundedForkEnv",
-        kwargs={"size": 11, "confound": False, "lethal_boundaries": True},
+        kwargs={"size": 15, "confound": False, "lethal_boundaries": True},
     )
 
 

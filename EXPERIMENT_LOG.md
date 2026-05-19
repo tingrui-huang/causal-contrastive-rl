@@ -190,6 +190,47 @@ _GLOBAL_WIND_DIST = {0: (0,0,0,0,1), 1: (0.05,0.05,0.05,0.05,0.8)}
 
 → confounding 起作用，所有方法触顶 ~0.40。理论上限（"always right" 策略）≈ 0.36。
 
+### 4d. ConfoundedFork v4 (15×15)：双侧 lava 左路 + 长绕道右路 + 全局风
+
+**重设计**（11×11 改 15×15）：
+- 起点 (2,13)、终点 (13,1)、fork 在 (2,12)
+- 左路：x=2 列，y=1..13（**23 步**），y=3..10 段两侧都是 lava (x=1, x=3)
+- 右路：fork → y=12 横道 → x=13 纵到 (13,4) → y=4 横道到 (4,4) → x=4 纵到 (4,1) → y=1 横道到 goal（**41 步**，长 1.8x）
+- 16 个 lava cells（双侧各 8）
+- 中间 bridge y=4、短列 x=4 强制右路绕道
+
+**修改**：
+- `envs/confounded_fork.py` 整体重写（size=15）：新 walkable/hazard/walkable_for_regime
+- `envs/__init__.py` 注册 `CausalContrastive-ConfoundedFork-15x15-*` 4 个 id（替换原 11x11）
+- 新增 `figures/draw_confounded_fork_schematic.py`（拓扑示意图）
+- 新增 `figures/draw_confounded_fork_deathmap.py`（死亡分布图，已 generalize 到任意 SIZE）
+
+#### v4 first attempt：风每向 20%（80% 总风强）
+
+| Method | u0 | u1 | worst | gap |
+|---|---|---|---|---|
+| Oracle 上界 | 1.00 | 0.18 | **0.18** | 0.82 |
+| Baseline | 0.94 | 0.16 | **0.16** | 0.78 |
+| Option 1 neighbor | 0.84 | 0.16 | **0.16** | 0.68 |
+| Option 2 Thm 2 | 0.90 | 0.20 | **0.20** | 0.70 |
+
+→ 80% 风过强，oracle 也走不通 41 步右路。env 在动力学执行层崩塌，分不出方法差异。
+
+#### v4 final：风每向 10%（40% 总风强）
+
+**修改**：`_GLOBAL_WIND_DIST[1] = (0.10, 0.10, 0.10, 0.10, 0.60)`
+
+| Method | u0 | u1 | mean | worst | gap | u=1 lava |
+|---|---|---|---|---|---|---|
+| Oracle 上界 | 0.92 | 0.50 | 0.71 | **0.50** | 0.42 | 25/50 |
+| **Option 1 neighbor** | 0.98 | 0.38 | 0.68 | **0.38** | 0.60 | 31/50 |
+| **Option 2 Thm 2** | 0.88 | 0.38 | 0.63 | **0.38** | 0.50 | 31/50 |
+| Baseline | 0.92 | 0.30 | 0.61 | **0.30** | 0.62 | 35/50 |
+
+→ confounding gap = 0.20，**两个 pessimism 方法都填补 +8 个点（40% of gap）**，pessimism 在 ConfoundedFork 上首次明确生效。neighbor 和 Thm 2 此 env 平手。
+
+死亡分布图：`figures/cf15w40_deathmap_{oracle,baseline,neighbor,thm2}_u1.png` —— Thm 2 把 fork (2,12) 通过率从 baseline 的 66 visits 提高到 80 visits，把右路中段 (13,11) 通过率从 21 翻到 49。
+
 ---
 
 ## 最终文件清单
@@ -206,6 +247,10 @@ _GLOBAL_WIND_DIST = {0: (0,0,0,0,1), 1: (0.05,0.05,0.05,0.05,0.8)}
 - `experiments/smoke_confounded_fork.py`
 - `experiments/diag_collector_coverage.py`
 - `experiments/diag_envgoal_share.py`
+- `figures/draw_confounded_fork_schematic.py`
+- `figures/draw_confounded_fork_deathmap.py`
+- `figures/confounded_fork_schematic.png`
+- `figures/cf15w40_deathmap_{oracle,baseline,neighbor,thm2}_u1.png`
 - `EXPERIMENT_LOG.md`（本文件）
 
 ### 修改

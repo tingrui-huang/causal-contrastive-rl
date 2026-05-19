@@ -44,7 +44,7 @@ from experiments.evaluate_actor_forced_u import (
 from utils.preprocess import extract_state, extract_state_oracle
 
 
-SIZE = 11
+SIZE = 15
 START_POS = ConfoundedForkEnv.start_pos()
 GOAL_POS = ConfoundedForkEnv.goal_pos()
 
@@ -258,21 +258,22 @@ def draw(
             zorder=5,
         )
 
-    # Pick a sparse set of cells to annotate so labels don't overlap.
-    if ref_path:
-        # Annotate fork cell, mid-path cells, and last cell before goal.
-        # Stagger by side based on cell y-coordinate.
-        annotate_set: set[tuple[int, int]] = set()
-        annotate_set.add(START_POS)
-        annotate_set.add(ref_path[0])
-        # Add cell every ~3 steps along the path
-        for i in range(1, len(ref_path) - 1, 3):
-            annotate_set.add(ref_path[i])
-        for cx, cy in annotate_set:
-            if (cx, cy) in lava:
+    # Annotate ONLY a few key landmarks on the reference path so labels stay
+    # legible: start, fork (next cell after start), and 3-4 evenly spaced
+    # waypoints. Stagger left vs right based on cell x-position.
+    if ref_path and len(ref_path) >= 2:
+        n = len(ref_path)
+        sample_idx = [0, 1]
+        for frac in (0.33, 0.66, 0.9):
+            sample_idx.append(int((n - 1) * frac))
+        seen: set[tuple[int, int]] = set()
+        for i in sample_idx:
+            cell = ref_path[i]
+            if cell in seen or cell in lava:
                 continue
-            side = "right" if cx <= SIZE // 2 else "left"
-            _annotate_cell(cx, cy, side=side)
+            seen.add(cell)
+            side = "right" if cell[0] <= SIZE // 2 else "left"
+            _annotate_cell(*cell, side=side)
 
     # Death circles on lava cells
     if deaths:
