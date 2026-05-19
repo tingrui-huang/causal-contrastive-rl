@@ -28,7 +28,7 @@ def build_multigoal_oracle_policy(
     *,
     epsilon: float,
     seed: int,
-    exclude_env_goal: bool = True,
+    exclude_env_goal: bool = False,
     min_subgoal_manhattan: int = 2,
 ):
     """Oracle that walks between random sub-goals (D4RL-play style).
@@ -40,9 +40,11 @@ def build_multigoal_oracle_policy(
         sampling already provides coverage diversity, so ``epsilon=0.0`` is a
         reasonable default; raise it only if extra perturbation is desired.
     exclude_env_goal
-        If True, the env's true goal is never picked as a sub-goal. Without this,
-        episodes terminate as soon as the oracle reaches the goal and trajectory
-        length collapses.
+        If True, the env's true goal is never picked as a sub-goal. Default is
+        False (env goal is one of the sub-goal candidates) so the actor receives
+        training signal for goal-conditioning on the env goal. With True, the env
+        goal is OOD for the actor at evaluation time and worst_case_success
+        collapses to chance. Set True only for ablations.
     min_subgoal_manhattan
         Minimum Manhattan distance from current position when sampling a sub-goal,
         to avoid trivial 1-cell sub-goals.

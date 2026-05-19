@@ -1,4 +1,4 @@
-"""Custom MiniGrid environments — WindyCorridor only. Registers Gymnasium ids on import."""
+"""Custom MiniGrid environments — WindyCorridor and ConfoundedFork."""
 
 from __future__ import annotations
 
@@ -25,6 +25,27 @@ def register_causal_envs() -> None:
         id="CausalContrastive-WindyCorridor-15x15-Lethal-Clean-v0",
         entry_point="envs.windy_corridor:WindyCorridorEnv",
         kwargs={"size": 15, "confound": False, "lethal_boundaries": True},
+    )
+
+    register(
+        id="CausalContrastive-ConfoundedFork-11x11-v0",
+        entry_point="envs.confounded_fork:ConfoundedForkEnv",
+        kwargs={"size": 11, "confound": True},
+    )
+    register(
+        id="CausalContrastive-ConfoundedFork-11x11-Clean-v0",
+        entry_point="envs.confounded_fork:ConfoundedForkEnv",
+        kwargs={"size": 11, "confound": False},
+    )
+    register(
+        id="CausalContrastive-ConfoundedFork-11x11-Lethal-v0",
+        entry_point="envs.confounded_fork:ConfoundedForkEnv",
+        kwargs={"size": 11, "confound": True, "lethal_boundaries": True},
+    )
+    register(
+        id="CausalContrastive-ConfoundedFork-11x11-Lethal-Clean-v0",
+        entry_point="envs.confounded_fork:ConfoundedForkEnv",
+        kwargs={"size": 11, "confound": False, "lethal_boundaries": True},
     )
 
 
