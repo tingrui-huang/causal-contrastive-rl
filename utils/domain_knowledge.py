@@ -26,11 +26,17 @@ POS_Y_IDX = 148
 
 def reachable_positions(
     x: int, y: int, max_manhattan: int = 2,
+    walkable: set[tuple[int, int]] | None = None,
 ) -> list[tuple[int, int]]:
-    """All walkable cells within `max_manhattan` of (x, y)."""
+    """All walkable cells within `max_manhattan` of (x, y).
+
+    If `walkable` is not provided, falls back to the WindyCorridor walkable set
+    (kept for backward compatibility with existing call sites).
+    """
+    cells = walkable if walkable is not None else _WALKABLE
     return [
         (wx, wy)
-        for wx, wy in _WALKABLE
+        for wx, wy in cells
         if abs(wx - x) + abs(wy - y) <= max_manhattan
     ]
 
@@ -83,11 +89,14 @@ def get_neighbor_states_for_batch(
     """
     if rng is None:
         rng = np.random.default_rng()
+    # Derive walkable set from the pos_index so this works for any env (not just
+    # the one whose walkable was hardcoded into _WALKABLE at module load).
+    walkable_from_index = set(pos_index.keys())
     result: list[np.ndarray] = []
     for i in range(states.shape[0]):
         x = int(round(states[i, POS_X_IDX]))
         y = int(round(states[i, POS_Y_IDX]))
-        neighbor_pos = reachable_positions(x, y, max_manhattan)
+        neighbor_pos = reachable_positions(x, y, max_manhattan, walkable=walkable_from_index)
 
         all_ns: list[np.ndarray] = []
         for nx, ny in neighbor_pos:

@@ -52,11 +52,16 @@ def _safe_walkable_for_regime(
 ) -> set[tuple[int, int]]:
     """Return a possibly restricted walkable set based on the hidden regime.
 
-    u=0 (calm): full walkable set — oracle takes the short risky route via x=11.
-    u=1 (windy): remove the x=11 vertical passage (y=6..13) so BFS is forced
-                  through the safe x=3 -> x=7 route.  The final approach cells
-                  (11,5), (12,5), (13,5) stay walkable so the goal is reachable.
+    Dispatch:
+    - If the env class exposes a ``walkable_for_regime(u)`` classmethod, defer
+      to it (env-specific U-awareness, e.g. ConfoundedFork).
+    - Otherwise fall back to the original WindyCorridor hardcoded rule:
+      u=1 removes the x=11 vertical passage (y=6..13), forcing the safe long
+      route via x=3 → x=7.
     """
+    if hasattr(env, "walkable_for_regime"):
+        return env.walkable_for_regime(hidden_u)
+
     if hidden_u == 0:
         return walkable
 
@@ -173,6 +178,13 @@ def build_policy(
             epsilon=oracle_epsilon,
             seed=seed,
         )
+    if collector_mode == "multigoal_oracle":
+        from utils.multigoal_oracle import build_multigoal_oracle_policy
+        return build_multigoal_oracle_policy(
+            env,
+            epsilon=oracle_epsilon,
+            seed=seed,
+        )
     raise ValueError(f"Unknown collector_mode: {collector_mode!r}")
 
 
@@ -244,9 +256,15 @@ def collect_episodes(
             buffer.add(pt)
             regime_buffers[ep_regime].add(pt)
 
-        states = np.stack(
-            [fn(tr["obs"], tr.get("info")) for tr in trajectory], axis=0
-        )
+        # Include the terminal state (next_obs of the final transition) so the
+        # hindsight relabel can sample it as a goal. Without this, the cell the
+        # agent ENDS UP at (e.g. the env goal when an episode terminates there)
+        # is structurally absent from the goal distribution. episode_actions
+        # stays length T because there is no action taken AT the terminal state.
+        states_list = [fn(tr["obs"], tr.get("info")) for tr in trajectory]
+        last = trajectory[-1]
+        states_list.append(fn(last["next_obs"], last.get("next_info")))
+        states = np.stack(states_list, axis=0)
         actions = np.array([tr["action"] for tr in trajectory], dtype=np.int64)
         episode_states.append(states)
         episode_actions.append(actions)

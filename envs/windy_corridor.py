@@ -52,8 +52,8 @@ class WindyCorridorEnv(MiniGridEnv):
         max_steps: int | None = None,
         **kwargs: Any,
     ) -> None:
-        if size != 15:
-            raise ValueError("WindyCorridorEnv currently supports only size=15.")
+        if size not in (11, 15):
+            raise ValueError("WindyCorridorEnv currently supports size 11 or 15.")
         if fixed_u is not None and fixed_u not in (0, 1):
             raise ValueError("fixed_u must be None, 0, or 1")
         if wind_per not in {"step", "episode"}:
