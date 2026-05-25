@@ -15,6 +15,7 @@
 - `py -3.11` launcher entry is stale (`E:\...\Python311\` was deleted).
 - `box2d-py` has no Windows wheel — needs SWIG + MSVC Build Tools (~6GB). Only LunarLander uses it.
 
+
 ## Re-enabling heavy envs (if needed later)
 ```bash
 pip install -e D:\Users\trhua\Research\Causal-Gymnasium[box2d]   # needs MSVC + SWIG
