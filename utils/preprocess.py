@@ -3,21 +3,30 @@ import numpy as np
 
 def extract_state(obs, info=None):
     """
-    Convert MiniGrid observation dict into a compact numeric state.
-    Include absolute agent pose for navigation-heavy custom environments.
+    Convert observation into a compact numeric state.
+
+    Supports two formats:
+    * Legacy MiniGrid dict: ``image``, ``agent_pos``, ``direction``.
+    * causal_gym SCM tuple ``(x, y)``: agent direction is read from ``info``
+      under the key ``agent_dir`` when available, else defaulted to 0.
     """
     if isinstance(obs, dict):
-        image = obs["image"]  # shape like (7, 7, 3)
+        image = obs["image"]
         agent_pos = obs.get("agent_pos", (0, 0))
         x = float(agent_pos[0])
         y = float(agent_pos[1])
         direction = float(obs.get("direction", 0))
         flat_image = np.asarray(image, dtype=np.float32).reshape(-1)
         pose = np.array([x, y, direction], dtype=np.float32)
-        state = np.concatenate([flat_image, pose])
-        return state
-    else:
-        return np.asarray(obs, dtype=np.float32).reshape(-1)
+        return np.concatenate([flat_image, pose])
+
+    arr = np.asarray(obs, dtype=np.float32).reshape(-1)
+    if arr.size == 2:
+        direction = 0.0
+        if info is not None:
+            direction = float(info.get("agent_dir", 0))
+        return np.array([arr[0], arr[1], direction], dtype=np.float32)
+    return arr
 
 
 def extract_state_oracle(obs, info=None):
