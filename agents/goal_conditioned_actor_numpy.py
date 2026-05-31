@@ -155,6 +155,51 @@ class GoalConditionedActorNumpy:
 
         return total_loss, {"W1": dW1, "b1": db1, "W2": dW2, "b2": db2}
 
+    def awr_loss_and_grads(
+        self,
+        state: np.ndarray,
+        goal: np.ndarray,
+        a_orig: np.ndarray,
+        weights: np.ndarray,
+    ) -> tuple[float, dict[str, np.ndarray]]:
+        """Advantage-Weighted Regression update (offline, data-action only).
+
+        Minimizes ``-mean(weights * log pi(a_orig | s, g))``: a behavior-cloning
+        loss where each datapoint is scaled by its AWR weight ``w = exp(adv/beta)``
+        (computed by the caller from critic advantages). Unlike ``loss_and_grads``
+        (Eysenbach's (1-λ)·adv + λ·BC), this never queries the critic for OOD
+        actions — it only reweights cloning of the actions actually in the data,
+        which is what made the recipe robust to OOD-action overestimation.
+
+        Parameters
+        ----------
+        state : (B, state_dim)
+        goal  : (B, goal_dim)
+        a_orig : (B,) int — dataset actions (always valid actions)
+        weights : (B,) float — AWR weights, already clipped by the caller
+        """
+        B = state.shape[0]
+        z2, (x, z1, h1) = self._forward(state, goal)  # includes valid-action mask
+        z2_stable = z2 - np.max(z2, axis=1, keepdims=True)
+        exp_z = np.exp(z2_stable)
+        probs = exp_z / np.sum(exp_z, axis=1, keepdims=True)
+
+        idx = a_orig.astype(np.int64)
+        log_pi_a = z2_stable[np.arange(B), idx] - np.log(np.sum(exp_z, axis=1))
+        loss = float(-np.mean(weights * log_pi_a))
+
+        one_hot_a = np.zeros_like(probs)
+        one_hot_a[np.arange(B), idx] = 1.0
+        dz2 = (weights[:, None] * (probs - one_hot_a)) / B
+
+        dW2 = h1.T @ dz2
+        db2 = np.sum(dz2, axis=0)
+        dh1 = dz2 @ self.W2.T
+        dz1 = dh1 * (z1 > 0).astype(np.float64)
+        dW1 = x.T @ dz1
+        db1 = np.sum(dz1, axis=0)
+        return loss, {"W1": dW1, "b1": db1, "W2": dW2, "b2": db2}
+
     def apply_sgd(self, grads: dict[str, np.ndarray], lr: float) -> None:
         self.W1 -= lr * grads["W1"]
         self.b1 -= lr * grads["b1"]
