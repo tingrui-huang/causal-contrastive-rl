@@ -98,6 +98,7 @@ def train(
     hidden: int = DEFAULT_HIDDEN,
     emb_dim: int = DEFAULT_EMB_DIM,
     tau: float = DEFAULT_TAU,
+    goal_dims: tuple[int, ...] = (0, 1),
     log_interval: int = 500,
     verbose: bool = True,
 ) -> dict[str, Any]:
@@ -123,6 +124,7 @@ def train(
         emb_dim=emb_dim,
         tau=tau,
         seed=seed,
+        goal_dims=goal_dims,
     )
     actor = GoalConditionedActorNumpy(
         state_dim=state_dim,
@@ -191,6 +193,7 @@ def train(
         "hidden": hidden,
         "emb_dim": emb_dim,
         "tau": tau,
+        "goal_dims": list(goal_dims),
         "state_dim": state_dim,
         "n_actions": n_actions,
         "n_episodes": n_episodes,

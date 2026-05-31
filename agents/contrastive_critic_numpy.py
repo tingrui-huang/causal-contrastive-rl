@@ -70,12 +70,26 @@ class ContrastiveCriticNumpy:
         emb_dim: int = 64,
         tau: float = 0.07,
         seed: int = 0,
+        goal_dims: tuple[int, ...] | None = None,
+        goal_feat_dim: int | None = None,
     ) -> None:
         rng = np.random.default_rng(seed)
         self.state_dim = state_dim
         self.n_actions = n_actions
         self.tau = tau
         self.emb_dim = emb_dim
+        # Which state columns the goal encoder sees. None = full state. For
+        # WindyCorridor we pass (0, 1) so the goal is the CELL (x, y) only and
+        # ignores facing direction — otherwise "reach (13,1) facing east" (how
+        # the NEAR route arrives) is a different goal from "facing north" (FAR),
+        # silently biasing the route comparison toward NEAR.
+        self.goal_dims = tuple(goal_dims) if goal_dims is not None else None
+        # When goals are fed as pre-built feature vectors (e.g. one-hot over
+        # cells) whose width differs from the (s,a) feature width, set this to
+        # the goal feature width. Goals are then used as-is (no column slicing),
+        # which decouples the goal encoder size from `state_dim`. Takes priority
+        # over `goal_dims`.
+        self.goal_feat_dim = int(goal_feat_dim) if goal_feat_dim is not None else None
 
         # --- sa_encoder: phi(s, a) ----------------------------------------
         sa_in = state_dim + n_actions
@@ -87,7 +101,12 @@ class ContrastiveCriticNumpy:
         self.sa_b2 = np.zeros(emb_dim, dtype=np.float64)
 
         # --- g_encoder: psi(s_g) — NO action input ------------------------
-        g_in = state_dim
+        if self.goal_feat_dim is not None:
+            g_in = self.goal_feat_dim
+        elif self.goal_dims is not None:
+            g_in = len(self.goal_dims)
+        else:
+            g_in = state_dim
         g_s1 = np.sqrt(2.0 / g_in)
         g_s2 = np.sqrt(2.0 / hidden)
         self.g_W1 = rng.normal(0.0, g_s1, (g_in, hidden)).astype(np.float64)
@@ -109,9 +128,27 @@ class ContrastiveCriticNumpy:
     def _embed_g(
         self, g: np.ndarray
     ) -> tuple[np.ndarray, tuple]:
-        """psi(s_g): (B, state_dim) -> (B, emb_dim)."""
+        """psi(s_g): (B, state_dim) -> (B, emb_dim).
+
+        If ``goal_dims`` is set, only those state columns are used (e.g. (x, y)
+        position, ignoring facing direction).
+        """
         g = np.asarray(g, dtype=np.float64)
+        if self.goal_feat_dim is None and self.goal_dims is not None:
+            g = g[:, self.goal_dims]
         return _embed_forward(g, self.g_W1, self.g_b1, self.g_W2, self.g_b2)
+
+    def _goal_key(self, s_future: np.ndarray) -> np.ndarray:
+        """Integer goal identity per sample, used to mask false negatives.
+
+        Two future states with the same goal identity (same cell, once direction
+        is ignored) are the SAME goal — they must not be each other's in-batch
+        negatives.
+        """
+        g = np.asarray(s_future, dtype=np.float64)
+        if self.goal_feat_dim is None and self.goal_dims is not None:
+            g = g[:, self.goal_dims]
+        return np.round(g).astype(np.int64)
 
     # ----- scoring --------------------------------------------------------
 
@@ -152,13 +189,25 @@ class ContrastiveCriticNumpy:
         logits = (h_sa @ h_g.T) / self.tau       # (B, B)
         labels = np.eye(B, dtype=np.float64)
 
-        loss = float(np.mean(
+        # False-negative mask: an off-diagonal pair (i, j) is a FAKE negative
+        # when s_future_j is the same goal as s_future_i — labelling it negative
+        # contradicts the positive on row i and collapses the margin. Zero those
+        # out so they neither contribute to the loss nor the gradient.
+        gkey = self._goal_key(s_future)                       # (B, k)
+        same = np.all(gkey[:, None, :] == gkey[None, :, :], axis=2)  # (B, B)
+        mask = np.ones((B, B), dtype=np.float64)
+        mask[same] = 0.0
+        np.fill_diagonal(mask, 1.0)              # always keep the positives
+        denom = float(mask.sum())
+
+        per = (
             labels * np.logaddexp(0.0, -logits)
             + (1.0 - labels) * np.logaddexp(0.0, logits)
-        ))
+        )
+        loss = float(np.sum(mask * per) / denom)
 
         sig = 1.0 / (1.0 + np.exp(-np.clip(logits, -50.0, 50.0)))
-        dl = (sig - labels) / (B * B)            # (B, B)
+        dl = ((sig - labels) * mask) / denom     # (B, B)
 
         d_h_sa = (dl @ h_g) / self.tau            # (B, E)
         d_h_g = (dl.T @ h_sa) / self.tau          # (B, E)
@@ -191,8 +240,15 @@ class ContrastiveCriticNumpy:
         h_g, _ = self._embed_g(s_future)
         logits = (h_sa @ h_g.T) / self.tau
         B = logits.shape[0]
+        # Exclude same-goal false negatives so the reported margin reflects the
+        # genuine positive-vs-(true)negative separation the loss optimizes.
+        gkey = self._goal_key(s_future)
+        same = np.all(gkey[:, None, :] == gkey[None, :, :], axis=2)
+        neg_mask = (~same)
+        np.fill_diagonal(neg_mask, False)
         pos_mean = float(np.trace(logits) / B)
-        neg_mean = float((np.sum(logits) - np.trace(logits)) / max(B * B - B, 1))
+        n_neg = int(neg_mask.sum())
+        neg_mean = float(logits[neg_mask].sum() / n_neg) if n_neg > 0 else 0.0
         return pos_mean - neg_mean
 
     # ----- optimiser ------------------------------------------------------
@@ -219,4 +275,6 @@ class ContrastiveCriticNumpy:
             "n_actions": self.n_actions,
             "tau": self.tau,
             "emb_dim": self.emb_dim,
+            "goal_dims": self.goal_dims,
+            "goal_feat_dim": self.goal_feat_dim,
         }

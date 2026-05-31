@@ -18,9 +18,14 @@ class GoalConditionedActorNumpy:
         n_actions: int,
         hidden: int = 128,
         seed: int = 0,
+        valid_actions: list[int] | None = None,
+        goal_dim: int | None = None,
     ) -> None:
         rng = np.random.default_rng(seed)
-        in_dim = state_dim * 2
+        # state and goal may have different feature widths (e.g. one-hot over
+        # (x,y,dir) vs over (x,y)); default to same width as before.
+        g_dim = goal_dim if goal_dim is not None else state_dim
+        in_dim = state_dim + g_dim
         s1 = np.sqrt(2.0 / in_dim)
         s2 = np.sqrt(2.0 / hidden)
         self.W1 = rng.normal(0.0, s1, (in_dim, hidden)).astype(np.float64)
@@ -28,8 +33,18 @@ class GoalConditionedActorNumpy:
         self.W2 = rng.normal(0.0, s2, (hidden, n_actions)).astype(np.float64)
         self.b2 = np.zeros(n_actions, dtype=np.float64)
         self.state_dim = state_dim
+        self.goal_dim = g_dim
         self.n_actions = n_actions
         self.hidden = hidden
+        # Additive logit mask: 0 for allowed actions, large-negative for disallowed
+        # ones (e.g. pickup/drop/toggle no-ops the critic never scored). Keeps the
+        # advantage term from exploiting actions that never appear in the data.
+        self.valid_actions = list(valid_actions) if valid_actions is not None else None
+        if self.valid_actions is not None:
+            self._logit_mask = np.full(n_actions, -1e9, dtype=np.float64)
+            self._logit_mask[self.valid_actions] = 0.0
+        else:
+            self._logit_mask = np.zeros(n_actions, dtype=np.float64)
 
     def _forward(
         self, state: np.ndarray, goal: np.ndarray
@@ -40,7 +55,7 @@ class GoalConditionedActorNumpy:
         )
         z1 = x @ self.W1 + self.b1
         h1 = np.maximum(z1, 0.0)
-        z2 = h1 @ self.W2 + self.b2
+        z2 = h1 @ self.W2 + self.b2 + self._logit_mask
         return z2, (x, z1, h1)
 
     def action_probs(self, state: np.ndarray, goal: np.ndarray) -> np.ndarray:
