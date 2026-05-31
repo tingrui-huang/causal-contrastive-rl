@@ -44,6 +44,7 @@ from minigrid.core.actions import Actions
 from agents.contrastive_critic_numpy import ContrastiveCriticNumpy  # noqa: F401 (kept for checkpoint format)
 from agents.expert_policy import CorridorExpertPolicy
 from agents.goal_conditioned_actor_numpy import GoalConditionedActorNumpy
+from configs import corridor_defaults as C
 from envs.windy_corridor import GOAL_POS, START_POS
 from utils.obs_transition import estimate_obs_transition, sample_obs_transition
 from utils.propensity import estimate_propensity, lookup
@@ -310,14 +311,14 @@ def main() -> None:
     parser.add_argument("--policy", choices=["expert", "actor"], default="actor")
     parser.add_argument("--actor-checkpoint", type=Path,
                         default=ROOT / "checkpoints" / "corridor_smoke.npz")
-    parser.add_argument("--num-episodes", type=int, default=1000)
-    parser.add_argument("--max-steps", type=int, default=400)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--p-near", type=float, default=0.8,
+    parser.add_argument("--num-episodes", type=int, default=C.NUM_EPISODES)
+    parser.add_argument("--max-steps", type=int, default=C.MAX_STEPS)
+    parser.add_argument("--seed", type=int, default=C.SEED)
+    parser.add_argument("--p-near", type=float, default=C.P_NEAR,
                         help="Only used when --policy expert.")
     parser.add_argument("--temperature", type=float, default=1.0,
                         help="Sampling temperature when --policy actor.")
-    parser.add_argument("--propensity-default", type=float, default=0.0,
+    parser.add_argument("--propensity-default", type=float, default=C.PROPENSITY_DEFAULT,
                         help="P_b(x|s) fallback for unseen states (low = more (ii) firings).")
     parser.add_argument("--obs-branch", choices=["data", "analytical"], default="data",
                         help="(i) branch transition: 'data' replays empirical P_obs(s'|s,x) "

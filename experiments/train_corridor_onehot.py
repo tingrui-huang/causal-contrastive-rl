@@ -41,10 +41,11 @@ if str(ROOT) not in sys.path:
 import numpy as np
 
 from agents.contrastive_critic_numpy import ContrastiveCriticNumpy
+from configs import corridor_defaults as C
 
-GAMMA = 0.99
-GOAL_CELL = (13, 1)
-VALID_ACTIONS = [0, 1, 2, 6]  # left, right, forward, done
+GAMMA = C.GAMMA
+GOAL_CELL = C.GOAL_CELL
+VALID_ACTIONS = C.VALID_ACTIONS  # left, right, forward, done
 
 
 def _k3(s) -> tuple[int, int, int]:
@@ -248,10 +249,10 @@ def main() -> None:
     p = argparse.ArgumentParser(description="Train one-hot contrastive critic on corridor worst-case data.")
     p.add_argument("--data", type=Path, default=ROOT / "data" / "corridor_worst_case_n1000.npz")
     p.add_argument("--output", type=Path, default=ROOT / "checkpoints" / "corridor_onehot_seed0.npz")
-    p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--num-steps", type=int, default=30000)
-    p.add_argument("--tau", type=float, default=0.07)
-    p.add_argument("--critic-lr", type=float, default=2e-3)
+    p.add_argument("--seed", type=int, default=C.SEED)
+    p.add_argument("--num-steps", type=int, default=C.CRITIC_STEPS)
+    p.add_argument("--tau", type=float, default=C.TAU)
+    p.add_argument("--critic-lr", type=float, default=C.CRITIC_LR)
     args = p.parse_args()
 
     result = train(

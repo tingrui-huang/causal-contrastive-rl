@@ -22,6 +22,7 @@ from __future__ import annotations
 import numpy as np
 from minigrid.core.actions import Actions
 
+from configs.corridor_defaults import P_NEAR
 from envs.windy_corridor import LETHAL_X, START_POS
 
 WIND_SOUTH = 1
@@ -39,7 +40,7 @@ class CorridorExpertPolicy:
 
     def __init__(
         self,
-        p_near: float = 0.8,
+        p_near: float = P_NEAR,
         rng: np.random.Generator | None = None,
     ) -> None:
         self._p_near = float(p_near)

@@ -45,6 +45,7 @@ if str(ROOT) not in sys.path:
 import numpy as np
 
 from agents.expert_policy import CorridorExpertPolicy
+from configs import corridor_defaults as C
 from envs import make_windy_corridor_scm
 from envs.windy_corridor import GOAL_POS
 
@@ -193,10 +194,10 @@ def save_npz(out: dict, output_path: Path, *, p_near: float, num_episodes: int) 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Collect WindyCorridor offline data.")
-    parser.add_argument("--num-episodes", type=int, default=1000)
-    parser.add_argument("--max-steps", type=int, default=400)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--p-near", type=float, default=0.8)
+    parser.add_argument("--num-episodes", type=int, default=C.NUM_EPISODES)
+    parser.add_argument("--max-steps", type=int, default=C.MAX_STEPS)
+    parser.add_argument("--seed", type=int, default=C.SEED)
+    parser.add_argument("--p-near", type=float, default=C.P_NEAR)
     parser.add_argument(
         "--output",
         type=Path,

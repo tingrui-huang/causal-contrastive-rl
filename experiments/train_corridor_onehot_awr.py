@@ -46,6 +46,7 @@ import numpy as np
 
 from agents.contrastive_critic_numpy import ContrastiveCriticNumpy
 from agents.goal_conditioned_actor_numpy import GoalConditionedActorNumpy
+from configs import corridor_defaults as C
 from envs import make_windy_corridor_scm
 from envs.windy_corridor import GOAL_POS, START_POS
 from experiments.train_corridor_onehot import encode_sa, encode_goal, GAMMA, VALID_ACTIONS
@@ -104,7 +105,7 @@ def train_awr(
     episode_states, episode_actions, n_actions,
     beta: float = 0.5, steps: int = 15000, lr: float = 2e-3,
     batch_size: int = 64, w_max: float = 20.0, seed: int = 1,
-    balanced: bool = True,
+    balanced: bool = True, actor_loss: str = "awr", lam: float = 0.5,
     log_interval: int = 2000, verbose: bool = True,
 ) -> GoalConditionedActorNumpy:
     actor = GoalConditionedActorNumpy(
@@ -149,21 +150,27 @@ def train_awr(
 
         # HER goal = sampled future state; goal encoder is dir-agnostic by design.
         scores = _critic_scores(critic, sa_index, goal_index, s, sf)
-        q = scores[np.arange(batch_size), a]
-        v = scores.mean(axis=1)
-        adv = q - v
-        w = np.clip(np.exp(np.clip(adv / beta, -10.0, 10.0)), 0.0, w_max)
 
         # Actor sees raw (x,y,dir); goal is the (dir-zeroed) future state.
         g_actor = sf.copy()
         g_actor[:, 2] = 0.0
-        loss, grads = actor.awr_loss_and_grads(s, g_actor, a, w)
+
+        if actor_loss == "paper":
+            # Original contrastive_rl actor: (1-lam)*E_pi[Q] + lam*BC (Eysenbach Eq.7-8).
+            loss, grads = actor.loss_and_grads(s, g_actor, a, scores, lam=lam)
+        else:
+            # AWR: exp-advantage-weighted BC over data actions only.
+            q = scores[np.arange(batch_size), a]
+            v = scores.mean(axis=1)
+            adv = q - v
+            w = np.clip(np.exp(np.clip(adv / beta, -10.0, 10.0)), 0.0, w_max)
+            loss, grads = actor.awr_loss_and_grads(s, g_actor, a, w)
         actor.apply_sgd(grads, lr=lr)
         losses.append(loss)
 
         if verbose and (step % log_interval == 0 or step == 1):
-            print(f"  step {step:6d}  awr_loss={np.mean(losses[-log_interval:]):.4f}  "
-                  f"mean_w={w.mean():.3f}")
+            extra = f"mean_w={w.mean():.3f}" if actor_loss == "awr" else f"lam={lam}"
+            print(f"  step {step:6d}  {actor_loss}_loss={np.mean(losses[-log_interval:]):.4f}  {extra}")
 
     if verbose:
         print(f"[awr] done in {time.time() - t0:.1f}s")
@@ -232,16 +239,19 @@ def main() -> None:
     p.add_argument("--critic", type=Path, default=ROOT / "checkpoints" / "corridor_onehot_seed0.npz")
     p.add_argument("--data", type=Path, default=ROOT / "data" / "corridor_worst_case_n1000.npz")
     p.add_argument("--output", type=Path, default=ROOT / "checkpoints" / "corridor_onehot_awr_seed0.npz")
-    p.add_argument("--beta", type=float, default=0.5)
-    p.add_argument("--steps", type=int, default=15000)
-    p.add_argument("--actor-lr", type=float, default=2e-3)
+    p.add_argument("--actor-loss", choices=["awr", "paper"], default="awr",
+                   help="awr = exp-advantage-weighted BC; paper = (1-lam)*E_pi[Q] + lam*BC (original contrastive_rl)")
+    p.add_argument("--lam", type=float, default=C.ACTOR_LAM, help="BC coefficient for --actor-loss paper")
+    p.add_argument("--beta", type=float, default=C.AWR_BETA)
+    p.add_argument("--steps", type=int, default=C.ACTOR_STEPS)
+    p.add_argument("--actor-lr", type=float, default=C.ACTOR_LR)
     p.add_argument("--seed", type=int, default=1)
-    p.add_argument("--balanced", dest="balanced", action="store_true", default=True,
+    p.add_argument("--balanced", dest="balanced", action="store_true", default=C.BALANCED_SAMPLING,
                    help="balanced sampling over distinct (s,a) pairs (default on)")
     p.add_argument("--no-balanced", dest="balanced", action="store_false",
                    help="uniform sampling over anchors (frequency-weighted, old behavior)")
-    p.add_argument("--eval-episodes", type=int, default=500)
-    p.add_argument("--max-steps", type=int, default=200)
+    p.add_argument("--eval-episodes", type=int, default=C.EVAL_EPISODES)
+    p.add_argument("--max-steps", type=int, default=C.MAX_STEPS)
     args = p.parse_args()
 
     critic, sa_index, goal_index, ccfg = load_onehot_critic(args.critic)
@@ -257,13 +267,14 @@ def main() -> None:
         episode_states=episode_states, episode_actions=episode_actions,
         n_actions=n_actions, beta=args.beta, steps=args.steps,
         lr=args.actor_lr, seed=args.seed, balanced=args.balanced,
+        actor_loss=args.actor_loss, lam=args.lam,
     )
 
     config = {
         "critic_checkpoint": str(args.critic), "data_path": str(args.data),
         "beta": args.beta, "steps": args.steps, "actor_lr": args.actor_lr,
         "seed": args.seed, "gamma": GAMMA, "valid_actions": VALID_ACTIONS,
-        "balanced": args.balanced,
+        "balanced": args.balanced, "actor_loss": args.actor_loss, "lam": args.lam,
         "encoding": "raw_state_onehot_critic_awr",
     }
     save_actor(actor, args.output, config)
